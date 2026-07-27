@@ -1,7 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { detectPlanCode } from '../src/plans.js';
-import { isProbableName, resolveCustomerJid } from '../src/conversation.js';
+import {
+  isProbableName,
+  phoneFromWhatsAppJid,
+  resolveCustomerJid
+} from '../src/conversation.js';
 
 test('reconhece todos os planos e valores do catálogo Gate One', () => {
   assert.equal(detectPlanCode('mensal'), 'monthly');
@@ -57,6 +61,22 @@ test('remove o identificador do aparelho ao normalizar o telefone', async () => 
   assert.equal(
     await resolveCustomerJid({ remoteJid: '5511999999999:12@s.whatsapp.net' }),
     '5511999999999@s.whatsapp.net'
+  );
+  assert.equal(
+    phoneFromWhatsAppJid('5555999999999:12@s.whatsapp.net'),
+    '5555999999999'
+  );
+});
+
+test('normaliza telefone sem país e rejeita LID como telefone', async () => {
+  assert.equal(
+    await resolveCustomerJid({ remoteJid: '55999999999@s.whatsapp.net' }),
+    '5555999999999@s.whatsapp.net'
+  );
+  assert.equal(phoneFromWhatsAppJid('123456789012345@lid'), null);
+  assert.equal(
+    await resolveCustomerJid({ remoteJid: '123456789012345@s.whatsapp.net' }),
+    null
   );
 });
 
