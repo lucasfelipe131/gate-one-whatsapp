@@ -8,7 +8,7 @@ import P from 'pino';
 import QRCode from 'qrcode';
 import { rm } from 'node:fs/promises';
 import { detectPlanCode } from './plans.js';
-import { isProbableName, normalizeCommand } from './conversation.js';
+import { isProbableName, normalizeCommand, resolveCustomerJid } from './conversation.js';
 
 const menu = `Bem-vindo ao *${process.env.BRAND_NAME || 'Gate One Pro'}*. 👋
 
@@ -49,6 +49,7 @@ export class WhatsAppBot {
     this.reconnectAttempts = 0;
     this.connectedAt = null;
     this.lastDisconnectAt = null;
+    this.phoneByLid = new Map();
   }
 
   snapshot() {
@@ -205,9 +206,15 @@ export class WhatsAppBot {
   async #handleMessage(message) {
     if (!this.socket || message.key.fromMe || message.key.remoteJid?.endsWith('@g.us')) return;
     const jid = message.key.remoteJid;
-    const customerJid = message.key.remoteJidAlt || jid;
+    const customerJid = resolveCustomerJid(message.key, this.phoneByLid);
     const text = (message.message?.conversation || message.message?.extendedTextMessage?.text || '').trim();
     if (!text) return;
+    if (!customerJid) {
+      return this.reply(
+        jid,
+        'Não consegui confirmar seu número nesta mensagem. Envie *MENU* novamente para eu tentar identificar seu cadastro.'
+      );
+    }
     const context = await this.registerInbound(
       customerJid,
       message.pushName,
@@ -240,6 +247,9 @@ export class WhatsAppBot {
         if (confirmation?.name) {
           return respond(`Obrigado, ${firstName(confirmation.name)}! Seu cadastro foi identificado.\n\n${menu}`);
         }
+        return respond(
+          'Recebi seu nome, mas não consegui salvá-lo agora. Aguarde alguns segundos e envie o nome novamente.'
+        );
       }
       return respond(
         `Olá! Antes de começar, quero deixar seu atendimento organizado.\n\nQual é o seu *nome*?`
