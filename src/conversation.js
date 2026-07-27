@@ -18,7 +18,15 @@ export function isProbableName(value) {
 
 export function canonicalPhoneJid(value) {
   const match = String(value || '').match(/^(\d+)(?::\d+)?@s\.whatsapp\.net$/);
-  return match ? `${match[1]}@s.whatsapp.net` : null;
+  if (!match) return null;
+  let digits = match[1];
+  if (digits.length === 10 || digits.length === 11) digits = `55${digits}`;
+  if (!digits.startsWith('55') || ![12, 13].includes(digits.length)) return null;
+  return `${digits}@s.whatsapp.net`;
+}
+
+export function phoneFromWhatsAppJid(value) {
+  return canonicalPhoneJid(value)?.replace('@s.whatsapp.net', '') || null;
 }
 
 export async function resolveCustomerJid(

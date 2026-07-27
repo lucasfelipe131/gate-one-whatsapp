@@ -8,7 +8,12 @@ import P from 'pino';
 import QRCode from 'qrcode';
 import { rm } from 'node:fs/promises';
 import { detectPlanCode } from './plans.js';
-import { isProbableName, normalizeCommand, resolveCustomerJid } from './conversation.js';
+import {
+  isProbableName,
+  normalizeCommand,
+  phoneFromWhatsAppJid,
+  resolveCustomerJid
+} from './conversation.js';
 
 const menu = `Bem-vindo ao *${process.env.BRAND_NAME || 'Gate One Pro'}*. 👋
 
@@ -40,6 +45,17 @@ function wait(delayMs) {
 
 function firstName(value) {
   return String(value || '').trim().split(/\s+/)[0] || 'cliente';
+}
+
+function normalizeGateOnePhone(value) {
+  const fromJid = phoneFromWhatsAppJid(value);
+  if (fromJid) return fromJid;
+  let digits = String(value || '')
+    .replace(/@.+$/, '')
+    .replace(/:\d+$/, '')
+    .replace(/\D/g, '');
+  if (digits.length === 10 || digits.length === 11) digits = `55${digits}`;
+  return digits.startsWith('55') && [12, 13].includes(digits.length) ? digits : null;
 }
 
 export class WhatsAppBot {
@@ -242,18 +258,25 @@ export class WhatsAppBot {
         'Não consegui confirmar seu número nesta mensagem. Envie *MENU* novamente para eu tentar identificar seu cadastro.'
       );
     }
+    const customerPhone = phoneFromWhatsAppJid(customerJid);
+    if (!customerPhone) {
+      return this.reply(
+        jid,
+        'Não consegui confirmar seu número nesta mensagem. Envie *MENU* novamente para eu tentar identificar seu cadastro.'
+      );
+    }
     const context = await this.registerInbound(
-      customerJid,
+      customerPhone,
       message.pushName,
       text,
       messageId || undefined
     );
     if (context?.duplicate) return;
-    const respond = (content) => this.reply(jid, content, customerJid);
+    const respond = (content) => this.reply(jid, content, customerPhone);
     const command = normalizeCommand(text);
 
     if (context?.sessionState === 'awaiting_login') {
-      const confirmation = await this.confirmLogin(customerJid, text);
+      const confirmation = await this.confirmLogin(customerPhone, text);
       if (confirmation?.matched) {
         return respond(
           `Cadastro confirmado, ${firstName(confirmation.name)}! Recuperei seu plano e o histórico dos atendimentos.\n\n${menu}`
@@ -266,7 +289,7 @@ export class WhatsAppBot {
 
     if (context?.needsName) {
       if (context.sessionState === 'awaiting_name' && isProbableName(text)) {
-        const confirmation = await this.confirmName(customerJid, text);
+        const confirmation = await this.confirmName(customerPhone, text);
         if (confirmation?.needsLogin) {
           return respond(
             `Obrigado, ${firstName(confirmation.name)}. Encontrei um cadastro antigo com esse nome.\n\nPara confirmar que ele é seu e recuperar os atendimentos anteriores, qual é o seu *login/ID do Gate One*?`
@@ -285,7 +308,7 @@ export class WhatsAppBot {
     }
 
     if (['OI', 'OLA', 'MENU', 'INICIO', '0'].includes(command)) {
-      const account = await this.lookupCustomer(customerJid, message.pushName);
+      const account = await this.lookupCustomer(customerPhone, message.pushName);
       const greeting = account || `Olá, ${firstName(message.pushName)}!`;
       return respond(`${greeting}\n\n${menu}`);
     }
@@ -297,11 +320,11 @@ export class WhatsAppBot {
       );
     }
     if (['2', 'MINHA CONTA', 'VENCIMENTO', 'CONTA'].includes(command)) {
-      const account = await this.lookupCustomer(customerJid, message.pushName);
+      const account = await this.lookupCustomer(customerPhone, message.pushName);
       return respond(account || 'Não encontrei seu cadastro por este número. Responda *4* para falar com o atendimento.');
     }
     if (['3', 'RENOVAR', 'PIX', 'PAGAMENTO'].includes(command)) {
-      await this.setSession(customerJid, 'awaiting_plan');
+      await this.setSession(customerPhone, 'awaiting_plan');
       const plans = await this.listPlans();
       return respond(
         `Perfeito! Escolha o plano que deseja renovar:\n\n${plans || '• *MENSAL* — R$ 30,00\n• *TRIMESTRAL* — R$ 85,00\n• *SEMESTRAL* — R$ 150,00\n• *ANUAL* — R$ 270,00'}`
@@ -309,7 +332,7 @@ export class WhatsAppBot {
     }
     const planCode = detectPlanCode(command);
     if (planCode) {
-      const link = await this.createPayment(customerJid, message.pushName, planCode);
+      const link = await this.createPayment(customerPhone, message.pushName, planCode);
       return respond(
         link ||
           'Não encontrei uma assinatura vinculada a este número. Responda *4* para falar com o atendimento.'
@@ -323,16 +346,16 @@ export class WhatsAppBot {
       );
     }
     if (['HISTORICO', 'MEUS PROBLEMAS', 'PROBLEMAS', 'ATENDIMENTOS'].includes(command)) {
-      const history = await this.customerHistory(customerJid);
+      const history = await this.customerHistory(customerPhone);
       return respond(history || 'Ainda não encontrei atendimentos anteriores vinculados a este número.');
     }
     if (['4', 'ATENDENTE', 'SUPORTE', 'HUMANO'].includes(command)) {
       const support = process.env.SUPPORT_WHATSAPP;
-      await this.setSession(customerJid, 'support');
+      await this.setSession(customerPhone, 'support');
       return respond(support ? `Certo! Seu histórico ficou registrado para o atendimento. Nossa equipe vai continuar por aqui. Se preferir, chame também: https://wa.me/${support}` : 'Certo! Seu histórico ficou registrado e um atendente vai continuar por aqui.');
     }
     if (context?.supportMessage) return respond(context.supportMessage);
-    const assistant = await this.askAssistant(customerJid, text);
+    const assistant = await this.askAssistant(customerPhone, text);
     return respond(assistant || `Não entendi essa opção.\n\n${menu}`);
   }
 
@@ -400,47 +423,49 @@ export class WhatsAppBot {
     return null;
   }
 
-  async registerInbound(jid, displayName, text, messageId) {
+  async registerInbound(phone, displayName, text, messageId) {
     return this.gateOne('/api/integrations/whatsapp/inbound', {
-      whatsapp: jid.replace(/@.+$/, ''),
+      whatsapp: phone,
       displayName,
       text,
       messageId
     }, { required: true });
   }
 
-  async confirmName(jid, name) {
+  async confirmName(phone, name) {
     return this.gateOne('/api/integrations/whatsapp/name', {
-      whatsapp: jid.replace(/@.+$/, ''),
+      whatsapp: phone,
       name
     }, { required: true });
   }
 
-  async confirmLogin(jid, login) {
+  async confirmLogin(phone, login) {
     return this.gateOne('/api/integrations/whatsapp/login', {
-      whatsapp: jid.replace(/@.+$/, ''),
+      whatsapp: phone,
       login
     }, { required: true });
   }
 
-  async setSession(jid, state, data = {}) {
+  async setSession(phone, state, data = {}) {
     return this.gateOne('/api/integrations/whatsapp/session', {
-      whatsapp: jid.replace(/@.+$/, ''),
+      whatsapp: phone,
       state,
       data
     });
   }
 
-  async logOutbound(jid, text, messageId) {
+  async logOutbound(phone, text, messageId) {
+    const normalizedPhone = normalizeGateOnePhone(phone);
+    if (!normalizedPhone) return null;
     return this.gateOne('/api/integrations/whatsapp/outbound', {
-      whatsapp: jid.replace(/@.+$/, ''),
+      whatsapp: normalizedPhone,
       text,
       ...(messageId ? { messageId } : {})
     });
   }
 
-  async lookupCustomer(jid, name) {
-    const data = await this.gateOne('/api/integrations/whatsapp/customer', { whatsapp: jid.replace(/@.+$/, ''), name });
+  async lookupCustomer(phone, name) {
+    const data = await this.gateOne('/api/integrations/whatsapp/customer', { whatsapp: phone, name });
     return data?.message || null;
   }
 
@@ -449,9 +474,9 @@ export class WhatsAppBot {
     return data?.message || null;
   }
 
-  async createPayment(jid, name, planCode = null) {
+  async createPayment(phone, name, planCode = null) {
     const data = await this.gateOne('/api/integrations/whatsapp/payment', {
-      whatsapp: jid.replace(/@.+$/, ''),
+      whatsapp: phone,
       name,
       ...(planCode ? { planCode } : {})
     });
@@ -463,16 +488,16 @@ export class WhatsAppBot {
     return data?.message || null;
   }
 
-  async customerHistory(jid) {
+  async customerHistory(phone) {
     const data = await this.gateOne('/api/integrations/whatsapp/history', {
-      whatsapp: jid.replace(/@.+$/, '')
+      whatsapp: phone
     });
     return data?.message || null;
   }
 
-  async askAssistant(jid, question) {
+  async askAssistant(phone, question) {
     const data = await this.gateOne('/api/integrations/whatsapp/assistant', {
-      whatsapp: jid.replace(/@.+$/, ''),
+      whatsapp: phone,
       question
     });
     return data?.message || null;
