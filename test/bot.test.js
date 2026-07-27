@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { detectPlanCode } from '../src/plans.js';
 import {
   isProbableName,
+  normalizeBrazilianPhoneDigits,
   phoneFromWhatsAppJid,
   resolveCustomerJid
 } from '../src/conversation.js';
@@ -65,6 +66,25 @@ test('remove o identificador do aparelho ao normalizar o telefone', async () => 
   assert.equal(
     phoneFromWhatsAppJid('5555999999999:12@s.whatsapp.net'),
     '5555999999999'
+  );
+});
+
+test('unifica celular brasileiro com ou sem o nono dígito', async () => {
+  assert.equal(
+    normalizeBrazilianPhoneDigits('555599998633'),
+    '5555999998633'
+  );
+  assert.equal(
+    await resolveCustomerJid({ remoteJid: '555599998633@s.whatsapp.net' }),
+    '5555999998633@s.whatsapp.net'
+  );
+  assert.equal(
+    phoneFromWhatsAppJid('555599998633:12@s.whatsapp.net'),
+    '5555999998633'
+  );
+  assert.equal(
+    normalizeBrazilianPhoneDigits('555533338633'),
+    '555533338633'
   );
 });
 
