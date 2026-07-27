@@ -4,9 +4,14 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { WhatsAppBot } from './bot.js';
 
-const app = Fastify({ logger: false });
+const app = Fastify({
+  logger: {
+    level: process.env.NODE_ENV === 'production' ? 'info' : 'debug',
+    redact: ['req.headers.x-admin-token', 'req.headers.x-gate-one-notify-secret']
+  }
+});
 const here = dirname(fileURLToPath(import.meta.url));
-const bot = new WhatsAppBot();
+const bot = new WhatsAppBot({ logger: app.log });
 const adminToken = process.env.ADMIN_TOKEN;
 const notifySecret = process.env.GATE_ONE_NOTIFY_SECRET;
 if (!adminToken || adminToken.length < 24) app.log.warn('ADMIN_TOKEN deve ter ao menos 24 caracteres antes do uso em produção.');
