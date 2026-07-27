@@ -16,12 +16,25 @@ export function isProbableName(value) {
   );
 }
 
+export function normalizeBrazilianPhoneDigits(value) {
+  let digits = String(value || '').replace(/\D/g, '');
+  if (digits.length === 10 || digits.length === 11) digits = `55${digits}`;
+  if (!digits.startsWith('55') || ![12, 13].includes(digits.length)) return null;
+
+  // Some Brazilian WhatsApp accounts still expose the mobile PN without the
+  // ninth digit. Spreadsheet imports use the current 55 + DDD + 9 digits
+  // format. Mobile ranges start at 6; landlines (2-5) remain untouched.
+  if (digits.length === 12 && /[6-9]/.test(digits[4])) {
+    digits = `${digits.slice(0, 4)}9${digits.slice(4)}`;
+  }
+  return digits;
+}
+
 export function canonicalPhoneJid(value) {
   const match = String(value || '').match(/^(\d+)(?::\d+)?@s\.whatsapp\.net$/);
   if (!match) return null;
-  let digits = match[1];
-  if (digits.length === 10 || digits.length === 11) digits = `55${digits}`;
-  if (!digits.startsWith('55') || ![12, 13].includes(digits.length)) return null;
+  const digits = normalizeBrazilianPhoneDigits(match[1]);
+  if (!digits) return null;
   return `${digits}@s.whatsapp.net`;
 }
 

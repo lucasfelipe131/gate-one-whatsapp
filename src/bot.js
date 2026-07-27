@@ -59,7 +59,8 @@ function normalizeGateOnePhone(value) {
 }
 
 export class WhatsAppBot {
-  constructor() {
+  constructor({ logger = console } = {}) {
+    this.logger = logger;
     this.socket = null;
     this.status = 'disconnected';
     this.qrDataUrl = null;
@@ -218,6 +219,13 @@ export class WhatsAppBot {
           await this.#handleMessage(message);
         } catch (error) {
           this.lastError = `Falha ao atender uma mensagem: ${error.message}`;
+          this.logger?.error?.(
+            {
+              error: error.message,
+              messageId: String(message.key?.id || '').slice(0, 120)
+            },
+            'Falha ao atender mensagem do WhatsApp'
+          );
           const jid = message.key?.remoteJid;
           if (jid && !message.key?.fromMe) {
             await this.reply(
