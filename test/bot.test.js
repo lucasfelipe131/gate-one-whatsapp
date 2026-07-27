@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { detectPlanCode } from '../src/plans.js';
-import { isProbableName } from '../src/conversation.js';
+import { isProbableName, resolveCustomerJid } from '../src/conversation.js';
 
 test('reconhece todos os planos e valores do catálogo Gate One', () => {
   assert.equal(detectPlanCode('mensal'), 'monthly');
@@ -21,4 +21,41 @@ test('distingue nome de comandos do atendimento', () => {
   assert.equal(isProbableName('MENU'), false);
   assert.equal(isProbableName('plano mensal'), false);
   assert.equal(isProbableName('3'), false);
+});
+
+test('usa sempre o telefone real quando o WhatsApp alterna entre PN e LID', () => {
+  const aliases = new Map();
+  assert.equal(
+    resolveCustomerJid(
+      {
+        remoteJid: '5511999999999@s.whatsapp.net',
+        remoteJidAlt: '123456789012345@lid',
+        addressingMode: 'pn'
+      },
+      aliases
+    ),
+    '5511999999999@s.whatsapp.net'
+  );
+  assert.equal(
+    resolveCustomerJid(
+      {
+        remoteJid: '123456789012345@lid',
+        remoteJidAlt: '5511999999999@s.whatsapp.net',
+        addressingMode: 'lid'
+      },
+      aliases
+    ),
+    '5511999999999@s.whatsapp.net'
+  );
+  assert.equal(
+    resolveCustomerJid({ remoteJid: '123456789012345@lid' }, aliases),
+    '5511999999999@s.whatsapp.net'
+  );
+});
+
+test('remove o identificador do aparelho ao normalizar o telefone', () => {
+  assert.equal(
+    resolveCustomerJid({ remoteJid: '5511999999999:12@s.whatsapp.net' }),
+    '5511999999999@s.whatsapp.net'
+  );
 });
