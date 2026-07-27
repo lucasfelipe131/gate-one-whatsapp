@@ -31,6 +31,13 @@ function withTimeout(promise, timeoutMs, message) {
   ]);
 }
 
+function wait(delayMs) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, delayMs);
+    timer.unref?.();
+  });
+}
+
 function firstName(value) {
   return String(value || '').trim().split(/\s+/)[0] || 'cliente';
 }
@@ -50,6 +57,7 @@ export class WhatsAppBot {
     this.connectedAt = null;
     this.lastDisconnectAt = null;
     this.phoneByLid = new Map();
+    this.processedMessageIds = new Map();
   }
 
   snapshot() {
@@ -189,7 +197,20 @@ export class WhatsAppBot {
     socket.ev.on('messages.upsert', async ({ messages, type }) => {
       if (generation !== this.connectionGeneration || socket !== this.socket) return;
       if (type !== 'notify') return;
-      for (const message of messages) await this.#handleMessage(message);
+      for (const message of messages) {
+        try {
+          await this.#handleMessage(message);
+        } catch (error) {
+          this.lastError = `Falha ao atender uma mensagem: ${error.message}`;
+          const jid = message.key?.remoteJid;
+          if (jid && !message.key?.fromMe) {
+            await this.reply(
+              jid,
+              'Tive uma instabilidade ao consultar seu cadastro. Aguarde alguns segundos e envie *MENU*. Se continuar, digite *ATENDENTE*.'
+            ).catch(() => {});
+          }
+        }
+      }
     });
   }
 
@@ -206,7 +227,13 @@ export class WhatsAppBot {
   async #handleMessage(message) {
     if (!this.socket || message.key.fromMe || message.key.remoteJid?.endsWith('@g.us')) return;
     const jid = message.key.remoteJid;
-    const customerJid = resolveCustomerJid(message.key, this.phoneByLid);
+    const messageId = String(message.key.id || '');
+    if (messageId && this.#alreadyProcessed(messageId)) return;
+    const customerJid = await resolveCustomerJid(
+      message.key,
+      this.phoneByLid,
+      (lidJid) => this.socket?.signalRepository?.lidMapping?.getPNForLID(lidJid)
+    );
     const text = (message.message?.conversation || message.message?.extendedTextMessage?.text || '').trim();
     if (!text) return;
     if (!customerJid) {
@@ -219,8 +246,9 @@ export class WhatsAppBot {
       customerJid,
       message.pushName,
       text,
-      message.key.id
+      messageId || undefined
     );
+    if (context?.duplicate) return;
     const respond = (content) => this.reply(jid, content, customerJid);
     const command = normalizeCommand(text);
 
@@ -314,21 +342,62 @@ export class WhatsAppBot {
     return sent;
   }
 
+  #alreadyProcessed(messageId) {
+    const now = Date.now();
+    for (const [id, timestamp] of this.processedMessageIds) {
+      if (now - timestamp > 30 * 60 * 1000) this.processedMessageIds.delete(id);
+    }
+    if (this.processedMessageIds.has(messageId)) return true;
+    this.processedMessageIds.set(messageId, now);
+    if (this.processedMessageIds.size > 2000) {
+      const oldest = this.processedMessageIds.keys().next().value;
+      if (oldest) this.processedMessageIds.delete(oldest);
+    }
+    return false;
+  }
+
   async sendTo(phone, text) {
     const digits = String(phone || '').replace(/\D/g, '');
     if (!digits || !this.socket || this.status !== 'connected') return null;
     return this.socket.sendMessage(`${digits}@s.whatsapp.net`, { text: String(text) });
   }
 
-  async gateOne(path, body) {
+  async gateOne(path, body, { required = false } = {}) {
     const base = process.env.GATE_ONE_URL;
     const secret = process.env.GATE_ONE_SHARED_SECRET;
-    if (!base || !secret) return null;
-    const response = await fetch(`${base.replace(/\/$/, '')}${path}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Gate-One-Bot-Secret': secret }, body: JSON.stringify(body)
-    });
-    if (!response.ok) return null;
-    return response.json();
+    if (!base || !secret) {
+      if (required) throw new Error('Integração interna com o Gate One não configurada.');
+      return null;
+    }
+    let lastError = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const response = await withTimeout(
+          fetch(`${base.replace(/\/$/, '')}${path}`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Gate-One-Bot-Secret': secret
+            },
+            body: JSON.stringify(body)
+          }),
+          12_000,
+          'a consulta ao cadastro demorou demais'
+        );
+        const data = await response.json().catch(() => ({}));
+        if (response.ok) return data;
+        lastError = new Error(
+          data.error || data.message || `Gate One respondeu ${response.status}`
+        );
+        if (![429, 502, 503, 504].includes(response.status)) break;
+      } catch (error) {
+        lastError = error;
+      }
+      if (attempt < 2) await wait(300 * (attempt + 1));
+    }
+    this.lastError = `Falha na integração ${path}: ${lastError?.message || 'erro desconhecido'}`;
+    if (required) throw lastError || new Error('Gate One indisponível.');
+    return null;
   }
 
   async registerInbound(jid, displayName, text, messageId) {
@@ -337,21 +406,21 @@ export class WhatsAppBot {
       displayName,
       text,
       messageId
-    });
+    }, { required: true });
   }
 
   async confirmName(jid, name) {
     return this.gateOne('/api/integrations/whatsapp/name', {
       whatsapp: jid.replace(/@.+$/, ''),
       name
-    });
+    }, { required: true });
   }
 
   async confirmLogin(jid, login) {
     return this.gateOne('/api/integrations/whatsapp/login', {
       whatsapp: jid.replace(/@.+$/, ''),
       login
-    });
+    }, { required: true });
   }
 
   async setSession(jid, state, data = {}) {
