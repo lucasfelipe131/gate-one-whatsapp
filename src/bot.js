@@ -8,7 +8,7 @@ import P from 'pino';
 import QRCode from 'qrcode';
 import { rm } from 'node:fs/promises';
 
-const menu = `Olá! 👋 Bem-vindo ao *${process.env.BRAND_NAME || 'Gate One Pro'}*.
+const menu = `Bem-vindo ao *${process.env.BRAND_NAME || 'Gate One Pro'}*. 👋
 
 Responda com uma opção:
 *1* — Planos e valores
@@ -17,6 +17,20 @@ Responda com uma opção:
 *4* — Falar com atendente
 
 Digite *MENU* quando quiser ver estas opções novamente.`;
+
+function withTimeout(promise, timeoutMs, message) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      const timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      timer.unref?.();
+    })
+  ]);
+}
+
+function firstName(value) {
+  return String(value || '').trim().split(/\s+/)[0] || 'cliente';
+}
 
 export class WhatsAppBot {
   constructor() {
@@ -42,7 +56,13 @@ export class WhatsAppBot {
 
   async connect() {
     if (this.connecting) return this.connecting;
-    this.connecting = this.#connect().finally(() => { this.connecting = null; });
+    this.connecting = this.#connect()
+      .catch((error) => {
+        this.status = 'disconnected';
+        this.lastError = `Não foi possível conectar: ${error.message}`;
+        throw error;
+      })
+      .finally(() => { this.connecting = null; });
     return this.connecting;
   }
 
@@ -71,9 +91,20 @@ export class WhatsAppBot {
     this.lastError = null;
     const authDir = process.env.AUTH_DIR || '/data/whatsapp-auth';
     const { state, saveCreds } = await useMultiFileAuthState(authDir);
-    const { version } = await fetchLatestBaileysVersion();
+    let version;
+    try {
+      ({ version } = await withTimeout(
+        fetchLatestBaileysVersion(),
+        8000,
+        'a consulta da versão do WhatsApp demorou demais'
+      ));
+    } catch {
+      // Baileys possui uma versão compatível embutida. O serviço não deve
+      // ficar preso em "Conectando" quando a consulta externa oscilar.
+      version = undefined;
+    }
     const socket = makeWASocket({
-      version,
+      ...(version ? { version } : {}),
       auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, P({ level: 'silent' })) },
       logger: P({ level: 'silent' }),
       printQRInTerminal: false,
@@ -134,19 +165,24 @@ export class WhatsAppBot {
   async #handleMessage(message) {
     if (!this.socket || message.key.fromMe || message.key.remoteJid?.endsWith('@g.us')) return;
     const jid = message.key.remoteJid;
+    const customerJid = message.key.remoteJidAlt || jid;
     const text = (message.message?.conversation || message.message?.extendedTextMessage?.text || '').trim();
     if (!text) return;
     const command = text.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase();
-    if (['OI', 'OLA', 'MENU', 'INICIO', '0'].includes(command)) return this.reply(jid, menu);
+    if (['OI', 'OLA', 'MENU', 'INICIO', '0'].includes(command)) {
+      const account = await this.lookupCustomer(customerJid, message.pushName);
+      const greeting = account || `Olá, ${firstName(message.pushName)}!`;
+      return this.reply(jid, `${greeting}\n\n${menu}`);
+    }
     if (['1', 'PLANOS', 'PLANO', 'VALORES'].includes(command)) {
       return this.reply(jid, '*Planos Gate One Pro*\n\n• Mensal — R$ 30,00\n• Trimestral — R$ 80,00\n\nResponda *3* para renovar ou *4* para atendimento.');
     }
     if (['2', 'MINHA CONTA', 'VENCIMENTO', 'CONTA'].includes(command)) {
-      const account = await this.lookupCustomer(jid, message.pushName);
+      const account = await this.lookupCustomer(customerJid, message.pushName);
       return this.reply(jid, account || 'Não encontrei seu cadastro por este número. Responda *4* para falar com o atendimento.');
     }
     if (['3', 'RENOVAR', 'PIX', 'PAGAMENTO'].includes(command)) {
-      const link = await this.createPayment(jid, message.pushName);
+      const link = await this.createPayment(customerJid, message.pushName);
       return this.reply(jid, link || 'Vou encaminhar você para o atendimento preparar sua renovação.');
     }
     if (['4', 'ATENDENTE', 'SUPORTE', 'HUMANO'].includes(command)) {
