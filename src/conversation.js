@@ -15,3 +15,31 @@ export function isProbableName(value) {
     normalizeCommand(name)
   );
 }
+
+function canonicalPhoneJid(value) {
+  const match = String(value || '').match(/^(\d+)(?::\d+)?@s\.whatsapp\.net$/);
+  return match ? `${match[1]}@s.whatsapp.net` : null;
+}
+
+export function resolveCustomerJid(key, phoneByLid = new Map()) {
+  const candidates = [
+    key?.remoteJid,
+    key?.remoteJidAlt,
+    key?.participant,
+    key?.participantAlt
+  ].filter(Boolean);
+  const phoneJid = candidates.map(canonicalPhoneJid).find(Boolean) || null;
+  const lidJids = candidates.filter((jid) => String(jid).endsWith('@lid'));
+
+  if (phoneJid) {
+    for (const lidJid of lidJids) phoneByLid.set(lidJid, phoneJid);
+    return phoneJid;
+  }
+
+  for (const lidJid of lidJids) {
+    const remembered = phoneByLid.get(lidJid);
+    if (remembered) return remembered;
+  }
+
+  return null;
+}
