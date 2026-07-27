@@ -16,12 +16,16 @@ export function isProbableName(value) {
   );
 }
 
-function canonicalPhoneJid(value) {
+export function canonicalPhoneJid(value) {
   const match = String(value || '').match(/^(\d+)(?::\d+)?@s\.whatsapp\.net$/);
   return match ? `${match[1]}@s.whatsapp.net` : null;
 }
 
-export function resolveCustomerJid(key, phoneByLid = new Map()) {
+export async function resolveCustomerJid(
+  key,
+  phoneByLid = new Map(),
+  getPhoneForLid = null
+) {
   const candidates = [
     key?.remoteJid,
     key?.remoteJidAlt,
@@ -39,6 +43,18 @@ export function resolveCustomerJid(key, phoneByLid = new Map()) {
   for (const lidJid of lidJids) {
     const remembered = phoneByLid.get(lidJid);
     if (remembered) return remembered;
+    if (getPhoneForLid) {
+      try {
+        const persisted = canonicalPhoneJid(await getPhoneForLid(lidJid));
+        if (persisted) {
+          phoneByLid.set(lidJid, persisted);
+          return persisted;
+        }
+      } catch {
+        // A mensagem ainda pode trazer o telefone alternativo em uma próxima
+        // tentativa; uma falha pontual do armazenamento não derruba o bot.
+      }
+    }
   }
 
   return null;
