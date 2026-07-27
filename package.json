@@ -6,7 +6,8 @@
   "engines": { "node": ">=22" },
   "scripts": {
     "start": "node src/server.js",
-    "check": "node --check src/server.js && node --check src/bot.js"
+    "check": "node --check src/server.js && node --check src/bot.js && node --check src/plans.js && node --check src/conversation.js",
+    "test": "node --test"
   },
   "dependencies": {
     "@fastify/static": "10.1.2",
