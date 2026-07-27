@@ -23,10 +23,10 @@ test('distingue nome de comandos do atendimento', () => {
   assert.equal(isProbableName('3'), false);
 });
 
-test('usa sempre o telefone real quando o WhatsApp alterna entre PN e LID', () => {
+test('usa sempre o telefone real quando o WhatsApp alterna entre PN e LID', async () => {
   const aliases = new Map();
   assert.equal(
-    resolveCustomerJid(
+    await resolveCustomerJid(
       {
         remoteJid: '5511999999999@s.whatsapp.net',
         remoteJidAlt: '123456789012345@lid',
@@ -37,7 +37,7 @@ test('usa sempre o telefone real quando o WhatsApp alterna entre PN e LID', () =
     '5511999999999@s.whatsapp.net'
   );
   assert.equal(
-    resolveCustomerJid(
+    await resolveCustomerJid(
       {
         remoteJid: '123456789012345@lid',
         remoteJidAlt: '5511999999999@s.whatsapp.net',
@@ -48,14 +48,30 @@ test('usa sempre o telefone real quando o WhatsApp alterna entre PN e LID', () =
     '5511999999999@s.whatsapp.net'
   );
   assert.equal(
-    resolveCustomerJid({ remoteJid: '123456789012345@lid' }, aliases),
+    await resolveCustomerJid({ remoteJid: '123456789012345@lid' }, aliases),
     '5511999999999@s.whatsapp.net'
   );
 });
 
-test('remove o identificador do aparelho ao normalizar o telefone', () => {
+test('remove o identificador do aparelho ao normalizar o telefone', async () => {
   assert.equal(
-    resolveCustomerJid({ remoteJid: '5511999999999:12@s.whatsapp.net' }),
+    await resolveCustomerJid({ remoteJid: '5511999999999:12@s.whatsapp.net' }),
     '5511999999999@s.whatsapp.net'
   );
+});
+
+test('recupera do armazenamento persistente o telefone de um LID após reiniciar', async () => {
+  const aliases = new Map();
+  const calls = [];
+  const resolved = await resolveCustomerJid(
+    { remoteJid: '123456789012345@lid' },
+    aliases,
+    async (lid) => {
+      calls.push(lid);
+      return '5511999999999:8@s.whatsapp.net';
+    }
+  );
+  assert.equal(resolved, '5511999999999@s.whatsapp.net');
+  assert.deepEqual(calls, ['123456789012345@lid']);
+  assert.equal(aliases.get('123456789012345@lid'), '5511999999999@s.whatsapp.net');
 });
