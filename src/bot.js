@@ -7,13 +7,14 @@ import makeWASocket, {
 import P from 'pino';
 import QRCode from 'qrcode';
 import { rm } from 'node:fs/promises';
+import { detectPlanCode } from './plans.js';
 
 const menu = `Bem-vindo ao *${process.env.BRAND_NAME || 'Gate One Pro'}*. 👋
 
 Responda com uma opção:
 *1* — Planos e valores
 *2* — Minha conta e vencimento
-*3* — Renovar / Pix
+*3* — Renovar o plano atual
 *4* — Falar com atendente
 
 Digite *MENU* quando quiser ver estas opções novamente.`;
@@ -42,6 +43,10 @@ export class WhatsAppBot {
     this.connecting = null;
     this.reconnectTimer = null;
     this.manualDisconnect = false;
+    this.connectionGeneration = 0;
+    this.reconnectAttempts = 0;
+    this.connectedAt = null;
+    this.lastDisconnectAt = null;
   }
 
   snapshot() {
@@ -50,11 +55,17 @@ export class WhatsAppBot {
       connected: this.status === 'connected',
       qr: this.qrDataUrl,
       account: this.me?.id || null,
-      lastError: this.lastError
+      lastError: this.lastError,
+      reconnectAttempts: this.reconnectAttempts,
+      connectedAt: this.connectedAt,
+      lastDisconnectAt: this.lastDisconnectAt
     };
   }
 
   async connect() {
+    if (this.socket && ['connecting', 'awaiting_qr', 'connected'].includes(this.status)) {
+      return this.snapshot();
+    }
     if (this.connecting) return this.connecting;
     this.connecting = this.#connect()
       .catch((error) => {
@@ -68,7 +79,9 @@ export class WhatsAppBot {
 
   async disconnect() {
     this.manualDisconnect = true;
+    this.connectionGeneration += 1;
     clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
     if (this.socket) {
       this.socket.end(new Error('Desconectado pelo administrador'));
       this.socket = null;
@@ -77,6 +90,8 @@ export class WhatsAppBot {
     this.status = 'disconnected';
     this.me = null;
     this.qrDataUrl = null;
+    this.connectedAt = null;
+    this.reconnectAttempts = 0;
     this.lastError = 'Sessão removida. Gere um novo QR Code.';
   }
 
@@ -87,6 +102,9 @@ export class WhatsAppBot {
 
   async #connect() {
     this.manualDisconnect = false;
+    clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+    const generation = ++this.connectionGeneration;
     this.status = 'connecting';
     this.lastError = null;
     const authDir = process.env.AUTH_DIR || '/data/whatsapp-auth';
@@ -116,6 +134,9 @@ export class WhatsAppBot {
     this.socket = socket;
     socket.ev.on('creds.update', saveCreds);
     socket.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
+      // A socket replaced during a reconnect may still emit a late "close".
+      // Ignore it so it cannot tear down the current healthy connection.
+      if (generation !== this.connectionGeneration || socket !== this.socket) return;
       if (qr) {
         this.status = 'awaiting_qr';
         this.qrDataUrl = await QRCode.toDataURL(qr, { margin: 1, width: 360 });
@@ -124,11 +145,22 @@ export class WhatsAppBot {
         this.status = 'connected';
         this.qrDataUrl = null;
         this.me = socket.user;
+        this.connectedAt = new Date().toISOString();
+        this.reconnectAttempts = 0;
+        clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
       }
       if (connection === 'close') {
+        if (generation !== this.connectionGeneration || socket !== this.socket) return;
         this.socket = null;
         this.me = null;
-        const code = lastDisconnect?.error?.output?.statusCode;
+        this.connectedAt = null;
+        this.lastDisconnectAt = new Date().toISOString();
+        this.qrDataUrl = null;
+        const code =
+          lastDisconnect?.error?.output?.statusCode ??
+          lastDisconnect?.error?.data?.statusCode ??
+          lastDisconnect?.error?.statusCode;
         if (this.manualDisconnect) {
           this.status = 'disconnected';
           this.qrDataUrl = null;
@@ -140,15 +172,19 @@ export class WhatsAppBot {
           this.status = 'disconnected';
           this.qrDataUrl = null;
           this.lastError = 'A sessão anterior foi removida. Gerando um QR Code novo…';
-          this.#scheduleReconnect(500);
+          this.reconnectAttempts = 0;
+          this.#scheduleReconnect(1000);
           return;
         }
         this.status = 'disconnected';
         this.lastError = 'Conexão interrompida. Tentando reconectar…';
-        this.#scheduleReconnect(3000);
+        this.reconnectAttempts += 1;
+        const delay = Math.min(30000, 2000 * (2 ** Math.min(this.reconnectAttempts - 1, 4)));
+        this.#scheduleReconnect(delay);
       }
     });
     socket.ev.on('messages.upsert', async ({ messages, type }) => {
+      if (generation !== this.connectionGeneration || socket !== this.socket) return;
       if (type !== 'notify') return;
       for (const message of messages) await this.#handleMessage(message);
     });
@@ -156,8 +192,10 @@ export class WhatsAppBot {
 
   #scheduleReconnect(delay) {
     if (this.manualDisconnect || this.reconnectTimer) return;
+    const generation = this.connectionGeneration;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
+      if (this.manualDisconnect || generation !== this.connectionGeneration) return;
       this.connect().catch((error) => { this.lastError = error.message; });
     }, delay);
   }
@@ -175,7 +213,12 @@ export class WhatsAppBot {
       return this.reply(jid, `${greeting}\n\n${menu}`);
     }
     if (['1', 'PLANOS', 'PLANO', 'VALORES'].includes(command)) {
-      return this.reply(jid, '*Planos Gate One Pro*\n\n• Mensal — R$ 30,00\n• Trimestral — R$ 80,00\n\nResponda *3* para renovar ou *4* para atendimento.');
+      const plans = await this.listPlans();
+      return this.reply(
+        jid,
+        plans ||
+          '*Planos Gate One Pro*\n\n• Mensal — R$ 30,00\n• Trimestral — R$ 85,00\n• Semestral — R$ 150,00\n• Anual — R$ 270,00\n\nResponda com o nome do plano para gerar o pagamento.'
+      );
     }
     if (['2', 'MINHA CONTA', 'VENCIMENTO', 'CONTA'].includes(command)) {
       const account = await this.lookupCustomer(customerJid, message.pushName);
@@ -184,6 +227,15 @@ export class WhatsAppBot {
     if (['3', 'RENOVAR', 'PIX', 'PAGAMENTO'].includes(command)) {
       const link = await this.createPayment(customerJid, message.pushName);
       return this.reply(jid, link || 'Vou encaminhar você para o atendimento preparar sua renovação.');
+    }
+    const planCode = detectPlanCode(command);
+    if (planCode) {
+      const link = await this.createPayment(customerJid, message.pushName, planCode);
+      return this.reply(
+        jid,
+        link ||
+          'Não encontrei uma assinatura vinculada a este número. Responda *4* para falar com o atendimento.'
+      );
     }
     if (['4', 'ATENDENTE', 'SUPORTE', 'HUMANO'].includes(command)) {
       const support = process.env.SUPPORT_WHATSAPP;
@@ -216,8 +268,17 @@ export class WhatsAppBot {
     return data?.message || null;
   }
 
-  async createPayment(jid, name) {
-    const data = await this.gateOne('/api/integrations/whatsapp/payment', { whatsapp: jid.replace(/@.+$/, ''), name });
+  async listPlans() {
+    const data = await this.gateOne('/api/integrations/whatsapp/plans', {});
+    return data?.message || null;
+  }
+
+  async createPayment(jid, name, planCode = null) {
+    const data = await this.gateOne('/api/integrations/whatsapp/payment', {
+      whatsapp: jid.replace(/@.+$/, ''),
+      name,
+      ...(planCode ? { planCode } : {})
+    });
     return data?.message || null;
   }
 }
