@@ -1,5 +1,6 @@
 import makeWASocket, {
   DisconnectReason,
+  downloadMediaMessage,
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
   useMultiFileAuthState
@@ -14,6 +15,14 @@ import {
   phoneFromWhatsAppJid,
   resolveCustomerJid
 } from './conversation.js';
+import {
+  buildMediaLogText,
+  inspectInboundMessage,
+  isLikelyReceipt,
+  isMediaMessage
+} from './media.js';
+
+const MAX_MEDIA_BYTES = 12 * 1024 * 1024;
 
 const menu = `Bem-vindo ao *${process.env.BRAND_NAME || 'Gate One Pro'}*. 👋
 
@@ -248,6 +257,127 @@ export class WhatsAppBot {
     }, delay);
   }
 
+  async #downloadInboundMedia(message) {
+    const buffer = await withTimeout(
+      downloadMediaMessage(
+        message,
+        'buffer',
+        {},
+        {
+          logger: P({ level: 'silent' }),
+          reuploadRequest: this.socket?.updateMediaMessage
+        }
+      ),
+      30_000,
+      'o download da mídia demorou demais'
+    );
+    if (!Buffer.isBuffer(buffer) || !buffer.length) {
+      throw new Error('O WhatsApp não entregou o conteúdo da mídia.');
+    }
+    if (buffer.length > MAX_MEDIA_BYTES) {
+      throw new Error('A mídia excede o limite de 12 MB do atendimento automático.');
+    }
+    return buffer;
+  }
+
+  #reviewPhone() {
+    return normalizeGateOnePhone(
+      process.env.RECEIPT_REVIEW_WHATSAPP || process.env.SUPPORT_WHATSAPP
+    );
+  }
+
+  async #forwardMediaForReview({ buffer, inbound, customerPhone, displayName }) {
+    const reviewPhone = this.#reviewPhone();
+    if (!reviewPhone || !this.socket || this.status !== 'connected') return false;
+    const reviewJid = `${reviewPhone}@s.whatsapp.net`;
+    const label = isLikelyReceipt(inbound) ? 'Possível comprovante' : 'Mídia de atendimento';
+    const caption = [
+      `📎 *${label} — Gate One Pro*`,
+      `Cliente: ${String(displayName || 'não informado').slice(0, 120)}`,
+      `WhatsApp: ${customerPhone}`,
+      inbound.text ? `Legenda: ${String(inbound.text).slice(0, 500)}` : ''
+    ].filter(Boolean).join('\n');
+    if (inbound.kind === 'image') {
+      await this.socket.sendMessage(reviewJid, { image: buffer, caption });
+      return true;
+    }
+    if (inbound.kind === 'video') {
+      await this.socket.sendMessage(reviewJid, {
+        video: buffer,
+        mimetype: inbound.media?.mimetype || 'video/mp4',
+        caption
+      });
+      return true;
+    }
+    if (inbound.kind === 'audio') {
+      await this.socket.sendMessage(reviewJid, { text: caption });
+      await this.socket.sendMessage(reviewJid, {
+        audio: buffer,
+        mimetype: inbound.media?.mimetype || 'audio/ogg',
+        ptt: Boolean(inbound.media?.ptt)
+      });
+      return true;
+    }
+    if (inbound.kind === 'pdf' || inbound.kind === 'document') {
+      await this.socket.sendMessage(reviewJid, {
+        document: buffer,
+        mimetype: inbound.media?.mimetype || 'application/octet-stream',
+        fileName: inbound.media?.fileName || 'arquivo-whatsapp',
+        caption
+      });
+      return true;
+    }
+    return false;
+  }
+
+  async #handleAttachment({ message, inbound, jid, customerPhone, messageId }) {
+    const logText = buildMediaLogText(inbound);
+    const context = await this.registerInbound(
+      customerPhone,
+      message.pushName,
+      logText,
+      messageId || undefined
+    );
+    if (context?.duplicate) return;
+
+    let forwarded = false;
+    try {
+      const buffer = await this.#downloadInboundMedia(message);
+      forwarded = await this.#forwardMediaForReview({
+        buffer,
+        inbound,
+        customerPhone,
+        displayName: context?.customer?.name || message.pushName
+      });
+    } catch (error) {
+      this.logger?.warn?.(
+        { error: error.message, mediaKind: inbound.kind, messageId },
+        'Mídia registrada, mas não encaminhada ao atendimento'
+      );
+    }
+
+    if (!context?.needsName) await this.setSession(customerPhone, 'support');
+    const namePrompt = context?.needsName
+      ? '\n\nPara vincular corretamente ao cadastro, responda agora com seu *nome*.'
+      : '';
+    const forwardingText = forwarded
+      ? 'encaminhei para a equipe conferir'
+      : 'registrei para a equipe conferir';
+
+    if (isLikelyReceipt(inbound)) {
+      return this.reply(
+        jid,
+        `✅ Recebi seu comprovante/arquivo e ${forwardingText}. A renovação só será feita depois da confirmação do pagamento.${namePrompt}`,
+        customerPhone
+      );
+    }
+    return this.reply(
+      jid,
+      `✅ Recebi sua ${inbound.kind === 'image' ? 'imagem' : inbound.kind === 'video' ? 'vídeo' : 'arquivo'} e ${forwardingText}.${namePrompt}`,
+      customerPhone
+    );
+  }
+
   async #handleMessage(message) {
     if (!this.socket || message.key.fromMe || message.key.remoteJid?.endsWith('@g.us')) return;
     const jid = message.key.remoteJid;
@@ -258,8 +388,6 @@ export class WhatsAppBot {
       this.phoneByLid,
       (lidJid) => this.socket?.signalRepository?.lidMapping?.getPNForLID(lidJid)
     );
-    const text = (message.message?.conversation || message.message?.extendedTextMessage?.text || '').trim();
-    if (!text) return;
     if (!customerJid) {
       return this.reply(
         jid,
@@ -273,10 +401,75 @@ export class WhatsAppBot {
         'Não consegui confirmar seu número nesta mensagem. Envie *MENU* novamente para eu tentar identificar seu cadastro.'
       );
     }
+    const inbound = inspectInboundMessage(message);
+    if (inbound.kind === 'ignored') return;
+    if (isMediaMessage(inbound) && inbound.kind !== 'audio') {
+      return this.#handleAttachment({ message, inbound, jid, customerPhone, messageId });
+    }
+
+    let text = inbound.text;
+    let inboundLogText = text;
+    if (inbound.kind === 'audio') {
+      let buffer;
+      try {
+        buffer = await this.#downloadInboundMedia(message);
+        const transcription = await this.transcribeAudio(customerPhone, buffer, inbound.media);
+        text = String(transcription?.text || '').trim();
+      } catch (error) {
+        this.logger?.warn?.(
+          { error: error.message, messageId },
+          'Áudio recebido, mas a transcrição não foi concluída'
+        );
+      }
+      inboundLogText = buildMediaLogText(inbound, text);
+      if (!text) {
+        const context = await this.registerInbound(
+          customerPhone,
+          message.pushName,
+          inboundLogText,
+          messageId || undefined
+        );
+        if (context?.duplicate) return;
+        let forwarded = false;
+        if (buffer) {
+          forwarded = await this.#forwardMediaForReview({
+            buffer,
+            inbound,
+            customerPhone,
+            displayName: context?.customer?.name || message.pushName
+          }).catch(() => false);
+        }
+        if (!context?.needsName) await this.setSession(customerPhone, 'support');
+        const namePrompt = context?.needsName
+          ? '\n\nPara vincular ao cadastro, responda também com seu *nome* em texto.'
+          : '';
+        return this.reply(
+          jid,
+          `🎧 Recebi seu áudio. Não consegui transcrevê-lo agora, mas ${forwarded ? 'encaminhei' : 'registrei'} para o atendimento humano.${namePrompt}`,
+          customerPhone
+        );
+      }
+    }
+
+    if (!text) {
+      const unknownText = `[Mensagem do WhatsApp recebida: ${inbound.type}]`;
+      const context = await this.registerInbound(
+        customerPhone,
+        message.pushName,
+        unknownText,
+        messageId || undefined
+      );
+      if (context?.duplicate) return;
+      return this.reply(
+        jid,
+        'Recebi sua mensagem, mas este formato não permite leitura automática. Envie em *texto*, *áudio*, *imagem* ou *PDF*, ou digite *ATENDENTE*.',
+        customerPhone
+      );
+    }
     const context = await this.registerInbound(
       customerPhone,
       message.pushName,
-      text,
+      inboundLogText,
       messageId || undefined
     );
     if (context?.duplicate) return;
@@ -393,7 +586,11 @@ export class WhatsAppBot {
     return this.socket.sendMessage(`${digits}@s.whatsapp.net`, { text: String(text) });
   }
 
-  async gateOne(path, body, { required = false } = {}) {
+  async gateOne(
+    path,
+    body,
+    { required = false, timeoutMs = 12_000, attempts = 3 } = {}
+  ) {
     const base = process.env.GATE_ONE_URL;
     const secret = process.env.GATE_ONE_SHARED_SECRET;
     if (!base || !secret) {
@@ -401,7 +598,7 @@ export class WhatsAppBot {
       return null;
     }
     let lastError = null;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
       try {
         const response = await withTimeout(
           fetch(`${base.replace(/\/$/, '')}${path}`, {
@@ -412,7 +609,7 @@ export class WhatsAppBot {
             },
             body: JSON.stringify(body)
           }),
-          12_000,
+          timeoutMs,
           'a consulta ao cadastro demorou demais'
         );
         const data = await response.json().catch(() => ({}));
@@ -424,7 +621,7 @@ export class WhatsAppBot {
       } catch (error) {
         lastError = error;
       }
-      if (attempt < 2) await wait(300 * (attempt + 1));
+      if (attempt < attempts - 1) await wait(300 * (attempt + 1));
     }
     this.lastError = `Falha na integração ${path}: ${lastError?.message || 'erro desconhecido'}`;
     if (required) throw lastError || new Error('Gate One indisponível.');
@@ -438,6 +635,21 @@ export class WhatsAppBot {
       text,
       messageId
     }, { required: true });
+  }
+
+  async transcribeAudio(phone, buffer, media = {}) {
+    return this.gateOne('/api/integrations/whatsapp/transcribe', {
+      whatsapp: phone,
+      audioBase64: buffer.toString('base64'),
+      mimetype: media.mimetype || 'audio/ogg',
+      fileName: media.fileName || 'audio-whatsapp.ogg'
+    }, {
+      required: true,
+      timeoutMs: 50_000,
+      // A resposta pode se perder depois de a transcrição ter sido cobrada.
+      // Não repetimos automaticamente esta chamada.
+      attempts: 1
+    });
   }
 
   async confirmName(phone, name) {

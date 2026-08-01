@@ -41,6 +41,14 @@ respostas e problemas detectados ficam no histórico central do Gate One.
 A opção `5`/`NOVIDADES` consulta o resumo diário de conteúdos sincronizados do
 canal do Telegram configurado no sistema principal.
 
+### Áudios, imagens e comprovantes
+
+- Áudios são transcritos pelo endpoint interno protegido do Gate One e seguem o mesmo fluxo das mensagens de texto.
+- PDFs são reconhecidos mesmo sem legenda, registrados no histórico e encaminhados para conferência humana.
+- Imagens, vídeos e outros documentos também deixam de ser ignorados e são encaminhados ao atendimento.
+- Nenhum comprovante confirma pagamento ou renova acesso automaticamente. A confirmação oficial continua dependente do Mercado Pago e das regras de aprovação.
+- Configure `RECEIPT_REVIEW_WHATSAPP` com DDI e DDD. Se ele não existir, o serviço usa `SUPPORT_WHATSAPP`.
+
 ## Integração com Gate One
 
 O Gate One principal expõe rotas internas protegidas por `X-Gate-One-Bot-Secret`:
@@ -54,6 +62,7 @@ O Gate One principal expõe rotas internas protegidas por `X-Gate-One-Bot-Secret
 - `POST /api/integrations/whatsapp/history`
 - `POST /api/integrations/whatsapp/content`
 - `POST /api/integrations/whatsapp/assistant`
+- `POST /api/integrations/whatsapp/transcribe`
 - `POST /api/integrations/whatsapp/outbound`
 
 Todas usam o mesmo valor de `GATE_ONE_SHARED_SECRET` e nunca devem ficar
