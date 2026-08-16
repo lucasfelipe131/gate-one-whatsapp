@@ -532,8 +532,14 @@ export class WhatsAppBot {
             `Cadastro confirmado, ${firstName(confirmation.name)}! Recuperei seu plano e o histórico dos atendimentos. Como posso ajudar?`
         );
       }
+      if (confirmation?.needsReview) {
+        await this.setSession(customerPhone, 'support');
+        return respond(
+          'Encontrei o login, mas ele já está ligado a outro número. Preservei os dois cadastros e encaminhei a confirmação para a equipe — você não precisa repetir seus dados.'
+        );
+      }
       return respond(
-        'Não encontrei esse login no cadastro indicado. Confira o login/ID do Gate One e envie novamente, ou digite *ATENDENTE*.'
+        'Não encontrei esse login. Confira exatamente como ele aparece no seu acesso e envie mais uma vez, ou digite *ATENDENTE*.'
       );
     }
 
@@ -563,9 +569,9 @@ export class WhatsAppBot {
     if (['2', 'MINHA CONTA', 'VENCIMENTO', 'CONTA'].includes(command)) {
       const account = await this.lookupCustomer(customerPhone, message.pushName);
       if (account) return respond(account);
-      await this.setSession(customerPhone, 'awaiting_name', { intent: 'account' });
+      await this.setSession(customerPhone, 'awaiting_login', { intent: 'account' });
       return respond(
-        'Não localizei a assinatura neste número. Para procurar no cadastro, qual é o seu *nome completo*?'
+        'Não localizei a assinatura neste número. Para vincular com segurança, qual é o seu *login/ID do Gate One*?'
       );
     }
     if (['3', 'RENOVAR', 'PIX', 'PAGAMENTO'].includes(command)) {
@@ -579,12 +585,12 @@ export class WhatsAppBot {
     if (planCode) {
       const link = await this.createPayment(customerPhone, message.pushName, planCode);
       if (link) return respond(link);
-      await this.setSession(customerPhone, 'awaiting_name', {
+      await this.setSession(customerPhone, 'awaiting_login', {
         intent: 'payment',
         planCode
       });
       return respond(
-        'Para localizar sua assinatura e gerar o link correto, qual é o seu *nome completo*?'
+        'Para localizar sua assinatura e gerar o link correto, qual é o seu *login/ID do Gate One*?'
       );
     }
     if (['HISTORICO', 'MEUS PROBLEMAS', 'PROBLEMAS', 'ATENDIMENTOS'].includes(command)) {
