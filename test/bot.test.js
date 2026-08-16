@@ -2,11 +2,23 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { detectPlanCode } from '../src/plans.js';
 import {
+  isExplicitMenuCommand,
+  isGreetingCommand,
+  isHumanSupportCommand,
   isProbableName,
   normalizeBrazilianPhoneDigits,
   phoneFromWhatsAppJid,
   resolveCustomerJid
 } from '../src/conversation.js';
+
+test('separa saudação, menu explícito e pedido de atendimento humano', () => {
+  assert.equal(isGreetingCommand('Oi'), true);
+  assert.equal(isGreetingCommand('boa tarde'), true);
+  assert.equal(isGreetingCommand('menu'), false);
+  assert.equal(isExplicitMenuCommand('MENU'), true);
+  assert.equal(isExplicitMenuCommand('oi'), false);
+  assert.equal(isHumanSupportCommand('falar com atendente'), true);
+});
 
 test('reconhece todos os planos e valores do catálogo Gate One', () => {
   assert.equal(detectPlanCode('mensal'), 'monthly');

@@ -10,6 +10,9 @@ import QRCode from 'qrcode';
 import { rm } from 'node:fs/promises';
 import { detectPlanCode } from './plans.js';
 import {
+  isExplicitMenuCommand,
+  isGreetingCommand,
+  isHumanSupportCommand,
   isProbableName,
   normalizeCommand,
   phoneFromWhatsAppJid,
@@ -24,16 +27,18 @@ import {
 
 const MAX_MEDIA_BYTES = 12 * 1024 * 1024;
 
-const menu = `Bem-vindo ao *${process.env.BRAND_NAME || 'Gate One Pro'}*. 👋
+const menu = `Claro! Estas são as opções do *${process.env.BRAND_NAME || 'Gate One Pro'}*:
 
-Responda com uma opção:
-*1* — Planos e valores
-*2* — Minha conta e vencimento
-*3* — Renovar e escolher um plano
-*4* — Falar com atendente
-*5* — Novidades do IPTV
+*1* Planos e valores
+*2* Minha conta, acesso e vencimento
+*3* Renovar meu plano
+*4* Falar com a equipe
+*5* Novidades do catálogo
 
-Digite *MENU* quando quiser ver estas opções novamente.`;
+Você também pode simplesmente me contar o que precisa, por texto ou áudio.`;
+
+const naturalWelcome =
+  'Pode me contar do seu jeito o que você precisa — por texto, áudio, foto ou PDF.';
 
 function withTimeout(promise, timeoutMs, message) {
   return Promise.race([
@@ -239,7 +244,7 @@ export class WhatsAppBot {
           if (jid && !message.key?.fromMe) {
             await this.reply(
               jid,
-              'Tive uma instabilidade ao consultar seu cadastro. Aguarde alguns segundos e envie *MENU*. Se continuar, digite *ATENDENTE*.'
+              'Tive uma instabilidade ao consultar seu cadastro, mas sua mensagem ficou registrada. Tente novamente em instantes ou digite *ATENDENTE* para falar com a equipe.'
             ).catch(() => {});
           }
         }
@@ -356,10 +361,7 @@ export class WhatsAppBot {
       );
     }
 
-    if (!context?.needsName) await this.setSession(customerPhone, 'support');
-    const namePrompt = context?.needsName
-      ? '\n\nPara vincular corretamente ao cadastro, responda agora com seu *nome*.'
-      : '';
+    await this.setSession(customerPhone, 'support');
     const forwardingText = forwarded
       ? 'encaminhei para a equipe conferir'
       : 'registrei para a equipe conferir';
@@ -367,13 +369,13 @@ export class WhatsAppBot {
     if (isLikelyReceipt(inbound)) {
       return this.reply(
         jid,
-        `✅ Recebi seu comprovante/arquivo e ${forwardingText}. A renovação só será feita depois da confirmação do pagamento.${namePrompt}`,
+        `✅ Recebi seu comprovante/arquivo e ${forwardingText}. A renovação só será feita depois da confirmação oficial do pagamento.`,
         customerPhone
       );
     }
     return this.reply(
       jid,
-      `✅ Recebi sua ${inbound.kind === 'image' ? 'imagem' : inbound.kind === 'video' ? 'vídeo' : 'arquivo'} e ${forwardingText}.${namePrompt}`,
+      `✅ Recebi sua ${inbound.kind === 'image' ? 'imagem' : inbound.kind === 'video' ? 'vídeo' : 'arquivo'} e ${forwardingText}.`,
       customerPhone
     );
   }
@@ -391,14 +393,14 @@ export class WhatsAppBot {
     if (!customerJid) {
       return this.reply(
         jid,
-        'Não consegui confirmar seu número nesta mensagem. Envie *MENU* novamente para eu tentar identificar seu cadastro.'
+        'Não consegui confirmar seu número nesta mensagem. Envie uma nova mensagem de texto ou digite *ATENDENTE*.'
       );
     }
     const customerPhone = phoneFromWhatsAppJid(customerJid);
     if (!customerPhone) {
       return this.reply(
         jid,
-        'Não consegui confirmar seu número nesta mensagem. Envie *MENU* novamente para eu tentar identificar seu cadastro.'
+        'Não consegui confirmar seu número nesta mensagem. Envie uma nova mensagem de texto ou digite *ATENDENTE*.'
       );
     }
     const inbound = inspectInboundMessage(message);
@@ -439,13 +441,10 @@ export class WhatsAppBot {
             displayName: context?.customer?.name || message.pushName
           }).catch(() => false);
         }
-        if (!context?.needsName) await this.setSession(customerPhone, 'support');
-        const namePrompt = context?.needsName
-          ? '\n\nPara vincular ao cadastro, responda também com seu *nome* em texto.'
-          : '';
+        await this.setSession(customerPhone, 'support');
         return this.reply(
           jid,
-          `🎧 Recebi seu áudio. Não consegui transcrevê-lo agora, mas ${forwarded ? 'encaminhei' : 'registrei'} para o atendimento humano.${namePrompt}`,
+          `🎧 Recebi seu áudio. Não consegui transcrevê-lo agora, mas ${forwarded ? 'encaminhei' : 'registrei'} para o atendimento humano.`,
           customerPhone
         );
       }
@@ -476,11 +475,61 @@ export class WhatsAppBot {
     const respond = (content) => this.reply(jid, content, customerPhone);
     const command = normalizeCommand(text);
 
+    if (isExplicitMenuCommand(command)) {
+      await this.setSession(customerPhone, 'menu');
+      return respond(menu);
+    }
+
+    if (isHumanSupportCommand(command)) {
+      const support = process.env.SUPPORT_WHATSAPP;
+      await this.setSession(customerPhone, 'support');
+      return respond(
+        support
+          ? `Certo. Deixei o histórico organizado para a equipe continuar por aqui. Se preferir, você também pode chamar: https://wa.me/${support}`
+          : 'Certo. Deixei o histórico organizado e a equipe vai continuar por aqui.'
+      );
+    }
+
+    if (['1', 'PLANOS', 'PLANO', 'VALORES'].includes(command)) {
+      const plans = await this.listPlans();
+      return respond(
+        plans ||
+          '*Planos Gate One Pro*\n\n• Mensal — R$ 30,00\n• Trimestral — R$ 85,00\n• Semestral — R$ 150,00\n• Anual — R$ 270,00\n\nSe quiser renovar, basta me dizer o nome do plano.'
+      );
+    }
+
+    if (['5', 'NOVIDADES', 'CONTEUDOS', 'CONTEUDO', 'LANCAMENTOS'].includes(command)) {
+      const content = await this.latestContent();
+      return respond(
+        content ||
+          'As novidades ainda estão sendo sincronizadas. Tente novamente mais tarde ou digite *ATENDENTE*.'
+      );
+    }
+
+    if (isGreetingCommand(command)) {
+      if (context?.sessionState === 'awaiting_login') {
+        return respond(
+          'Oi! Para concluir a identificação e recuperar seu plano, qual é o seu *login/ID do Gate One*?'
+        );
+      }
+      if (context?.sessionState === 'awaiting_name') {
+        return respond(
+          'Oi! Para localizar sua assinatura e continuar de onde paramos, qual é o seu *nome completo*?'
+        );
+      }
+      const greeting = await this.lookupCustomer(customerPhone, message.pushName, 'greeting');
+      return respond(
+        greeting || `Oi, ${firstName(message.pushName)}! 👋\n${naturalWelcome}`
+      );
+    }
+
     if (context?.sessionState === 'awaiting_login') {
       const confirmation = await this.confirmLogin(customerPhone, text);
       if (confirmation?.matched) {
+        const resumed = await this.resumePendingIntent(customerPhone, confirmation.name, confirmation);
         return respond(
-          `Cadastro confirmado, ${firstName(confirmation.name)}! Recuperei seu plano e o histórico dos atendimentos.\n\n${menu}`
+          resumed ||
+            `Cadastro confirmado, ${firstName(confirmation.name)}! Recuperei seu plano e o histórico dos atendimentos. Como posso ajudar?`
         );
       }
       return respond(
@@ -488,41 +537,36 @@ export class WhatsAppBot {
       );
     }
 
-    if (context?.needsName) {
-      if (context.sessionState === 'awaiting_name' && isProbableName(text)) {
+    if (context?.sessionState === 'awaiting_name') {
+      if (isProbableName(text)) {
         const confirmation = await this.confirmName(customerPhone, text);
         if (confirmation?.needsLogin) {
           return respond(
-            `Obrigado, ${firstName(confirmation.name)}. Encontrei um cadastro antigo com esse nome.\n\nPara confirmar que ele é seu e recuperar os atendimentos anteriores, qual é o seu *login/ID do Gate One*?`
+            `Obrigado, ${firstName(confirmation.name)}. Encontrei um cadastro com esse nome. Para confirmar que ele é seu, qual é o seu *login/ID do Gate One*?`
           );
         }
         if (confirmation?.name) {
-          return respond(`Obrigado, ${firstName(confirmation.name)}! Seu cadastro foi identificado.\n\n${menu}`);
+          const resumed = await this.resumePendingIntent(customerPhone, confirmation.name, confirmation);
+          return respond(
+            resumed || `Obrigado, ${firstName(confirmation.name)}! Seu cadastro foi identificado. Como posso ajudar?`
+          );
         }
         return respond(
           'Recebi seu nome, mas não consegui salvá-lo agora. Aguarde alguns segundos e envie o nome novamente.'
         );
       }
       return respond(
-        `Olá! Antes de começar, quero deixar seu atendimento organizado.\n\nQual é o seu *nome*?`
+        'Para localizar sua assinatura com segurança, preciso de uma informação por vez. Qual é o seu *nome completo*?'
       );
     }
 
-    if (['OI', 'OLA', 'MENU', 'INICIO', '0'].includes(command)) {
-      const account = await this.lookupCustomer(customerPhone, message.pushName);
-      const greeting = account || `Olá, ${firstName(message.pushName)}!`;
-      return respond(`${greeting}\n\n${menu}`);
-    }
-    if (['1', 'PLANOS', 'PLANO', 'VALORES'].includes(command)) {
-      const plans = await this.listPlans();
-      return respond(
-        plans ||
-          '*Planos Gate One Pro*\n\n• Mensal — R$ 30,00\n• Trimestral — R$ 85,00\n• Semestral — R$ 150,00\n• Anual — R$ 270,00\n\nResponda com o nome do plano para gerar o pagamento.'
-      );
-    }
     if (['2', 'MINHA CONTA', 'VENCIMENTO', 'CONTA'].includes(command)) {
       const account = await this.lookupCustomer(customerPhone, message.pushName);
-      return respond(account || 'Não encontrei seu cadastro por este número. Responda *4* para falar com o atendimento.');
+      if (account) return respond(account);
+      await this.setSession(customerPhone, 'awaiting_name', { intent: 'account' });
+      return respond(
+        'Não localizei a assinatura neste número. Para procurar no cadastro, qual é o seu *nome completo*?'
+      );
     }
     if (['3', 'RENOVAR', 'PIX', 'PAGAMENTO'].includes(command)) {
       await this.setSession(customerPhone, 'awaiting_plan');
@@ -534,30 +578,35 @@ export class WhatsAppBot {
     const planCode = detectPlanCode(command);
     if (planCode) {
       const link = await this.createPayment(customerPhone, message.pushName, planCode);
+      if (link) return respond(link);
+      await this.setSession(customerPhone, 'awaiting_name', {
+        intent: 'payment',
+        planCode
+      });
       return respond(
-        link ||
-          'Não encontrei uma assinatura vinculada a este número. Responda *4* para falar com o atendimento.'
-      );
-    }
-    if (['5', 'NOVIDADES', 'CONTEUDOS', 'CONTEUDO', 'LANCAMENTOS'].includes(command)) {
-      const content = await this.latestContent();
-      return respond(
-        content ||
-          'As novidades ainda estão sendo sincronizadas. Tente novamente mais tarde ou digite *ATENDENTE*.'
+        'Para localizar sua assinatura e gerar o link correto, qual é o seu *nome completo*?'
       );
     }
     if (['HISTORICO', 'MEUS PROBLEMAS', 'PROBLEMAS', 'ATENDIMENTOS'].includes(command)) {
       const history = await this.customerHistory(customerPhone);
       return respond(history || 'Ainda não encontrei atendimentos anteriores vinculados a este número.');
     }
-    if (['4', 'ATENDENTE', 'SUPORTE', 'HUMANO'].includes(command)) {
-      const support = process.env.SUPPORT_WHATSAPP;
-      await this.setSession(customerPhone, 'support');
-      return respond(support ? `Certo! Seu histórico ficou registrado para o atendimento. Nossa equipe vai continuar por aqui. Se preferir, chame também: https://wa.me/${support}` : 'Certo! Seu histórico ficou registrado e um atendente vai continuar por aqui.');
-    }
-    if (context?.supportMessage) return respond(context.supportMessage);
     const assistant = await this.askAssistant(customerPhone, text);
-    return respond(assistant || `Não entendi essa opção.\n\n${menu}`);
+    if (assistant) return respond(assistant);
+    if (context?.supportMessage) return respond(context.supportMessage);
+    return respond(
+      'Não consegui entender bem o que aconteceu. Pode me explicar em uma frase? Se preferir ver as opções, escreva *MENU*.'
+    );
+  }
+
+  async resumePendingIntent(phone, name, confirmation = {}) {
+    if (confirmation.pendingIntent === 'payment' && confirmation.pendingPlanCode) {
+      return this.createPayment(phone, name, confirmation.pendingPlanCode);
+    }
+    if (confirmation.pendingIntent === 'account') {
+      return this.lookupCustomer(phone, name);
+    }
+    return null;
   }
 
   async reply(jid, text, customerJid = jid) {
@@ -684,9 +733,9 @@ export class WhatsAppBot {
     });
   }
 
-  async lookupCustomer(phone, name) {
+  async lookupCustomer(phone, name, mode = 'full') {
     const data = await this.gateOne('/api/integrations/whatsapp/customer', { whatsapp: phone, name });
-    return data?.message || null;
+    return (mode === 'greeting' ? data?.greeting : data?.message) || null;
   }
 
   async listPlans() {

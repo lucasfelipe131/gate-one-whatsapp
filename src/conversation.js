@@ -6,6 +6,22 @@ export function normalizeCommand(value) {
     .toUpperCase();
 }
 
+export function isGreetingCommand(value) {
+  return /^(OI|OLA|OPA|E AI|BOM DIA|BOA TARDE|BOA NOITE|TUDO BEM|BLZ)$/.test(
+    normalizeCommand(value)
+  );
+}
+
+export function isExplicitMenuCommand(value) {
+  return /^(MENU|INICIO|0)$/.test(normalizeCommand(value));
+}
+
+export function isHumanSupportCommand(value) {
+  return /^(4|ATENDENTE|SUPORTE|HUMANO|FALAR COM ATENDENTE)$/.test(
+    normalizeCommand(value)
+  );
+}
+
 export function isProbableName(value) {
   const name = String(value || '')
     .replace(/\s+/g, ' ')
