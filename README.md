@@ -33,10 +33,12 @@ Na renovação, o cliente primeiro escolhe o ciclo. Ele pode responder com o
 nome do plano ou com `30`, `85`, `150` ou `270` para receber o Checkout Pro
 correspondente.
 
-Números ainda não cadastrados recebem um pedido de nome. Quando existe um
-cadastro antigo com o mesmo nome em outro telefone, o bot pede também o
-login/ID do Gate One antes de vincular e mostrar dados. Mensagens recebidas,
-respostas e problemas detectados ficam no histórico central do Gate One.
+O bot atende a dúvida antes de pedir cadastro e só solicita o nome quando ele
+é necessário para localizar conta ou renovação. Faz uma pergunta por vez e,
+quando existe um cadastro antigo com o mesmo nome em outro telefone, pede o
+login/ID do Gate One antes de vincular e mostrar dados. O menu completo aparece
+somente quando a pessoa escreve `MENU`. Mensagens recebidas, respostas e
+problemas detectados ficam no histórico central do Gate One.
 
 A opção `5`/`NOVIDADES` consulta o resumo diário de conteúdos sincronizados do
 canal do Telegram configurado no sistema principal.
