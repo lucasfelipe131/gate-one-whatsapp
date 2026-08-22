@@ -1,0 +1,55 @@
+name: GATE WhatsApp CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - 'phase*/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gate-whatsapp-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  syntax:
+    name: gate-whatsapp / syntax
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+
+  unit-tests:
+    name: gate-whatsapp / unit-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
+  integration-contracts:
+    name: gate-whatsapp / integration-contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: node --test test/security-contracts.test.js
