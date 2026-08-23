@@ -25,6 +25,14 @@ import {
   isMediaMessage
 } from './media.js';
 import { GateCoreClient } from './gate-core-client.js';
+import {
+  buildContextAccountMessage,
+  buildContextGreeting,
+  buildPaidContextReply,
+  buildPendingOperationReply,
+  contextPurposeForCommand,
+  customer360FromResponse
+} from './customer-context.js';
 
 const MAX_MEDIA_BYTES = 12 * 1024 * 1024;
 
@@ -349,6 +357,7 @@ export class WhatsAppBot {
       messageId || undefined
     );
     if (context?.duplicate) return;
+    await this.loadCustomerContext(customerPhone, 'SUPPORT', { messageId });
 
     let forwarded = false;
     try {
@@ -437,6 +446,7 @@ export class WhatsAppBot {
           messageId || undefined
         );
         if (context?.duplicate) return;
+        await this.loadCustomerContext(customerPhone, 'SUPPORT', { messageId });
         let forwarded = false;
         if (buffer) {
           forwarded = await this.#forwardMediaForReview({
@@ -479,6 +489,11 @@ export class WhatsAppBot {
     if (context?.duplicate) return;
     const respond = (content) => this.reply(jid, content, customerPhone);
     const command = normalizeCommand(text);
+    const customer360 = await this.loadCustomerContext(
+      customerPhone,
+      contextPurposeForCommand(command),
+      { messageId }
+    );
 
     if (isExplicitMenuCommand(command)) {
       await this.setSession(customerPhone, 'menu');
@@ -512,6 +527,8 @@ export class WhatsAppBot {
     }
 
     if (isGreetingCommand(command)) {
+      const contextGreeting = buildContextGreeting(customer360);
+      if (contextGreeting) return respond(contextGreeting);
       if (context?.sessionState === 'awaiting_login') {
         return respond(
           'Oi! Para concluir a identificação e recuperar seu plano, qual é o seu *login/ID do Gate One*?'
@@ -572,6 +589,8 @@ export class WhatsAppBot {
     }
 
     if (['2', 'MINHA CONTA', 'VENCIMENTO', 'CONTA'].includes(command)) {
+      const contextAccount = buildContextAccountMessage(customer360);
+      if (contextAccount) return respond(contextAccount);
       const account = await this.lookupCustomer(customerPhone, message.pushName);
       if (account) return respond(account);
       await this.setSession(customerPhone, 'awaiting_login', { intent: 'account' });
@@ -579,7 +598,12 @@ export class WhatsAppBot {
         'Não localizei a assinatura neste número. Para vincular com segurança, qual é o seu *login/ID do Gate One*?'
       );
     }
+    if (['PAGUEI', 'COMPROVANTE'].includes(command)) {
+      return respond(buildPaidContextReply(customer360));
+    }
     if (['3', 'RENOVAR', 'PIX', 'PAGAMENTO'].includes(command)) {
+      const pending = buildPendingOperationReply(customer360);
+      if (pending) return respond(pending);
       await this.setSession(customerPhone, 'awaiting_plan');
       const plans = await this.listPlans();
       return respond(
@@ -588,6 +612,8 @@ export class WhatsAppBot {
     }
     const planCode = detectPlanCode(command);
     if (planCode) {
+      const pending = buildPendingOperationReply(customer360);
+      if (pending) return respond(pending);
       const link = await this.createPayment(customerPhone, message.pushName, planCode);
       if (link) return respond(link);
       await this.setSession(customerPhone, 'awaiting_login', {
@@ -673,6 +699,43 @@ export class WhatsAppBot {
     this.lastError = `Falha na integração ${path}: ${lastError?.message || 'erro desconhecido'}`;
     if (required) throw lastError || new Error('Gate One indisponível.');
     return null;
+  }
+
+  async loadCustomerContext(phone, purpose = 'CONVERSATION', { messageId = null } = {}) {
+    if (!this.gateCore.configured) return null;
+    try {
+      const response = await withTimeout(
+        this.gateCore.getCustomerContextByIdentity({
+          type: 'WHATSAPP',
+          provider: 'whatsapp',
+          value: phone
+        }, {
+          purpose,
+          channel: 'WHATSAPP',
+          recentMessageLimit: 12,
+          memoryLimit: 6
+        }),
+        12_000,
+        'a resolução do contexto demorou demais'
+      );
+      const customer360 = customer360FromResponse(response);
+      this.logger?.info?.({
+        message_id: messageId,
+        customer_id: customer360?.customer_id || null,
+        context_snapshot_id: response?.data?.context_snapshot_id || null,
+        correlation_id: response?.correlation_id || null,
+        purpose,
+        result: customer360?.context_status || response?.error?.code || 'UNAVAILABLE'
+      }, 'Contexto do cliente consultado');
+      return customer360;
+    } catch (error) {
+      this.logger?.warn?.({
+        message_id: messageId,
+        purpose,
+        code: error.code || null
+      }, 'Contexto do cliente indisponível; fallback legado preservado');
+      return null;
+    }
   }
 
   async registerInbound(phone, displayName, text, messageId) {

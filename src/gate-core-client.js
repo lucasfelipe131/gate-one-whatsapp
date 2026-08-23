@@ -112,11 +112,39 @@ export class GateCoreClient {
     });
   }
 
-  getCustomerContext(customerId, options = {}) {
+  getCustomerContext(customerOrIdentity, options = {}) {
+    const isCustomerId = typeof customerOrIdentity === 'string';
+    const {
+      requestId,
+      correlationId,
+      purpose = 'CONVERSATION',
+      channel = 'WHATSAPP',
+      requestedScopes,
+      recentMessageLimit,
+      memoryLimit
+    } = options;
     return this.request('customer.context.get', {
-      ...options,
-      subject: { type: 'customer', id: customerId }
+      ...(requestId ? { requestId } : {}),
+      ...(correlationId ? { correlationId } : {}),
+      subject: {
+        type: 'customer',
+        ...(isCustomerId ? { id: customerOrIdentity } : {})
+      },
+      input: {
+        ...(!isCustomerId ? { identity: customerOrIdentity } : {}),
+        purpose,
+        channel,
+        ...(requestedScopes ? { requested_scopes: requestedScopes } : {}),
+        ...(recentMessageLimit !== undefined
+          ? { recent_message_limit: recentMessageLimit }
+          : {}),
+        ...(memoryLimit !== undefined ? { memory_limit: memoryLimit } : {})
+      }
     });
+  }
+
+  getCustomerContextByIdentity(identity, options = {}) {
+    return this.getCustomerContext(identity, options);
   }
 
   getSubscription(customerId, options = {}) {

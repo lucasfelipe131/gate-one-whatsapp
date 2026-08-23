@@ -89,3 +89,78 @@ test('não permite ao canal inventar operação fora do contrato', () => {
     /não suportada/
   );
 });
+
+test('solicita Customer 360 por identidade, finalidade e scopes pela fronteira v1', async () => {
+  const calls = [];
+  const client = new GateCoreClient({
+    baseUrl: 'https://gate.invalid',
+    secret: 'test-only-secret',
+    fetchImpl: async (url, options) => {
+      const request = JSON.parse(options.body);
+      calls.push({ url, request });
+      return {
+        ok: true,
+        json: async () => ({
+          contract_version: 1,
+          request_id: request.request_id,
+          correlation_id: request.correlation_id,
+          status: 'SUCCESS',
+          data: {
+            contract: 'ContextSnapshot.v1',
+            context_snapshot_id: '40000000-0000-4000-8000-000000000004',
+            customer360: { contract: 'Customer360.v1', customer_id: CUSTOMER_ID }
+          },
+          error: null
+        })
+      };
+    }
+  });
+  const response = await client.getCustomerContextByIdentity({
+    type: 'WHATSAPP', provider: 'whatsapp', value: '5511999999999'
+  }, {
+    purpose: 'SUPPORT',
+    requestedScopes: ['IDENTITY', 'SUBSCRIPTION', 'SUPPORT'],
+    requestId: REQUEST_ID,
+    correlationId: CORRELATION_ID
+  });
+  assert.equal(response.data.contract, 'ContextSnapshot.v1');
+  assert.equal(calls[0].request.action, 'customer.context.get');
+  assert.equal(calls[0].request.actor.capability, 'customer.context.read');
+  assert.equal(calls[0].request.subject.id, undefined);
+  assert.deepEqual(calls[0].request.input.identity, {
+    type: 'WHATSAPP', provider: 'whatsapp', value: '5511999999999'
+  });
+  assert.equal(calls[0].request.input.purpose, 'SUPPORT');
+  assert.deepEqual(calls[0].request.input.requested_scopes, [
+    'IDENTITY', 'SUBSCRIPTION', 'SUPPORT'
+  ]);
+});
+
+test('falha de contexto retorna envelope seguro sem disparar operação financeira', async () => {
+  const actions = [];
+  const client = new GateCoreClient({
+    baseUrl: 'https://gate.invalid',
+    secret: 'test-only-secret',
+    fetchImpl: async (_url, options) => {
+      const request = JSON.parse(options.body);
+      actions.push(request.action);
+      return {
+        ok: false,
+        status: 404,
+        json: async () => ({
+          contract_version: 1,
+          request_id: request.request_id,
+          correlation_id: request.correlation_id,
+          status: 'FAILED',
+          data: null,
+          error: { code: 'CUSTOMER_NOT_FOUND', message: 'Cliente não encontrado.' }
+        })
+      };
+    }
+  });
+  const response = await client.getCustomerContextByIdentity({
+    type: 'WHATSAPP', provider: 'whatsapp', value: '5511999999999'
+  });
+  assert.equal(response.error.code, 'CUSTOMER_NOT_FOUND');
+  assert.deepEqual(actions, ['customer.context.get']);
+});
