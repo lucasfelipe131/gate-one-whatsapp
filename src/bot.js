@@ -30,6 +30,7 @@ import {
   buildContextGreeting,
   buildPaidContextReply,
   buildPendingOperationReply,
+  buildRenewalStatusReply,
   contextPurposeForCommand,
   customer360FromResponse
 } from './customer-context.js';
@@ -599,11 +600,29 @@ export class WhatsAppBot {
       );
     }
     if (['PAGUEI', 'COMPROVANTE'].includes(command)) {
+      if (customer360?.customer_id && this.gateCore.configured) {
+        const status = await this.gateCore.getRenewalStatus(customer360.customer_id, {}, {
+          correlationId: customer360.renewal?.correlation_id || undefined
+        }).catch(() => null);
+        if (status?.data?.decision && status.data.decision !== 'PAYMENT_REQUIRED') {
+          return respond(buildRenewalStatusReply(status));
+        }
+      }
       return respond(buildPaidContextReply(customer360));
     }
     if (['3', 'RENOVAR', 'PIX', 'PAGAMENTO'].includes(command)) {
       const pending = buildPendingOperationReply(customer360);
       if (pending) return respond(pending);
+      if (customer360?.customer_id && this.gateCore.configured) {
+        const requested = await this.gateCore.requestRenewal(customer360.customer_id, {
+          ...(customer360.subscription?.subscription_id
+            ? { subscription_id: customer360.subscription.subscription_id }
+            : {})
+        }).catch(() => null);
+        if (requested?.data?.decision && requested.data.decision !== 'PAYMENT_REQUIRED') {
+          return respond(buildRenewalStatusReply(requested));
+        }
+      }
       await this.setSession(customerPhone, 'awaiting_plan');
       const plans = await this.listPlans();
       return respond(

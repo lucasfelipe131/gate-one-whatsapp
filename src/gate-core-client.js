@@ -8,6 +8,7 @@ export const GATE_CORE_ACTION_CAPABILITIES = Object.freeze({
   'subscription.get': 'subscription.read',
   'payment.request': 'payment.request',
   'renewal.request': 'renewal.request',
+  'renewal.status.get': 'renewal.read',
   'support.case.open': 'support.case.open'
 });
 
@@ -164,6 +165,14 @@ export class GateCoreClient {
 
   requestRenewal(customerId, input = {}, options = {}) {
     return this.request('renewal.request', {
+      ...options,
+      subject: { type: 'customer', id: customerId },
+      input
+    });
+  }
+
+  getRenewalStatus(customerId, input = {}, options = {}) {
+    return this.request('renewal.status.get', {
       ...options,
       subject: { type: 'customer', id: customerId },
       input
