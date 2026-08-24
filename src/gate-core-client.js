@@ -5,11 +5,16 @@ export const GATE_CORE_CONTRACT_VERSION = 1;
 export const GATE_CORE_ACTION_CAPABILITIES = Object.freeze({
   'customer.resolve': 'customer.identity.resolve',
   'customer.context.get': 'customer.context.read',
+  'conversation.process': 'conversation.agent.execute',
   'subscription.get': 'subscription.read',
+  'plan.list': 'plan.read',
   'payment.request': 'payment.request',
+  'payment.status.get': 'payment.read',
   'renewal.request': 'renewal.request',
   'renewal.status.get': 'renewal.read',
-  'support.case.open': 'support.case.open'
+  'support.case.open': 'support.case.open',
+  'support.case.list': 'support.case.read',
+  'conversation.handoff.request': 'conversation.handoff'
 });
 
 export function createCoreRequest({
@@ -155,8 +160,31 @@ export class GateCoreClient {
     });
   }
 
+  processConversation(input, options = {}) {
+    return this.request('conversation.process', {
+      ...options,
+      subject: { type: 'conversation', id: input.conversation_id },
+      input
+    });
+  }
+
+  listPlans(options = {}) {
+    return this.request('plan.list', {
+      ...options,
+      subject: { type: 'catalog' }
+    });
+  }
+
   requestPayment(customerId, input = {}, options = {}) {
     return this.request('payment.request', {
+      ...options,
+      subject: { type: 'customer', id: customerId },
+      input
+    });
+  }
+
+  getPaymentStatus(customerId, input = {}, options = {}) {
+    return this.request('payment.status.get', {
       ...options,
       subject: { type: 'customer', id: customerId },
       input
@@ -183,6 +211,21 @@ export class GateCoreClient {
     return this.request('support.case.open', {
       ...options,
       subject: { type: 'customer', id: customerId },
+      input
+    });
+  }
+
+  getOpenSupportCases(customerId, options = {}) {
+    return this.request('support.case.list', {
+      ...options,
+      subject: { type: 'customer', id: customerId }
+    });
+  }
+
+  requestHumanHandoff(customerId, input, options = {}) {
+    return this.request('conversation.handoff.request', {
+      ...options,
+      subject: { type: 'customer', ...(customerId ? { id: customerId } : {}) },
       input
     });
   }

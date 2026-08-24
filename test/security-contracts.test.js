@@ -20,3 +20,13 @@ test('health não expõe estado de autenticação bruto', async () => {
   assert.match(source, /app\.get\('\/health'/);
   assert.doesNotMatch(source, /\/health[\s\S]{0,300}(?:creds|cookies|storageState)/);
 });
+
+test('canal autônomo não expõe SQL, shell, filesystem ou HTTP arbitrário como tool', async () => {
+  const [client, autonomous] = await Promise.all([
+    readFile(new URL('../src/gate-core-client.js', import.meta.url), 'utf8'),
+    readFile(new URL('../src/autonomous-operations.js', import.meta.url), 'utf8')
+  ]);
+  assert.doesNotMatch(client, /executeSql|arbitraryHttp|shellCommand|filesystemWrite|evalTool/);
+  assert.doesNotMatch(autonomous, /child_process|node:fs|\beval\s*\(/);
+  assert.match(client, /conversation\.agent\.execute/);
+});
