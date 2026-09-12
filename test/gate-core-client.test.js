@@ -194,3 +194,34 @@ test('WhatsApp pode solicitar renovação e consultar estado, nunca executar', a
   assert.equal(actions[1].actor.capability, 'renewal.read');
   assert.ok(actions.every((request) => request.actor.type === 'SERVICE'));
 });
+
+test('WhatsApp delega o turno autônomo ao Core com capability específica', async () => {
+  const actions = [];
+  const client = new GateCoreClient({
+    baseUrl: 'https://gate.invalid', secret: 'test-only-secret',
+    fetchImpl: async (_url, options) => {
+      const request = JSON.parse(options.body);
+      actions.push(request);
+      return {
+        ok: true,
+        json: async () => ({
+          contract_version: 1,
+          request_id: request.request_id,
+          correlation_id: request.correlation_id,
+          status: 'SUCCESS',
+          data: { contract: 'GateConversationTurn.v1', handled: true },
+          error: null
+        })
+      };
+    }
+  });
+  await client.processConversation({
+    conversation_id: 'whatsapp:5511999999999',
+    message: { id: 'message-1', text: 'quero renovar', content_type: 'TEXT' },
+    identity: { type: 'WHATSAPP', provider: 'whatsapp', value: '5511999999999' }
+  }, { requestId: REQUEST_ID, correlationId: CORRELATION_ID });
+  assert.equal(actions[0].action, 'conversation.process');
+  assert.equal(actions[0].actor.capability, 'conversation.agent.execute');
+  assert.equal(actions[0].actor.type, 'SERVICE');
+  assert.equal(actions[0].subject.type, 'conversation');
+});

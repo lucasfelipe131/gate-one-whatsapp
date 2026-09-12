@@ -25,6 +25,7 @@ import {
   isMediaMessage
 } from './media.js';
 import { GateCoreClient } from './gate-core-client.js';
+import { processAutonomousOperation } from './autonomous-operations.js';
 import {
   buildContextAccountMessage,
   buildContextGreeting,
@@ -382,6 +383,18 @@ export class WhatsAppBot {
       : 'registrei para a equipe conferir';
 
     if (isLikelyReceipt(inbound)) {
+      const autonomous = await this.runAutonomousConversation({
+        phone: customerPhone,
+        text: inbound.text || 'Enviei um comprovante de pagamento.',
+        contentType: inbound.kind === 'image' ? 'IMAGE' : inbound.kind === 'pdf' ? 'PDF' : 'DOCUMENT',
+        messageId
+      });
+      if (autonomous?.handled) {
+        if (autonomous.conversation_state) {
+          await this.setSession(customerPhone, autonomous.conversation_state);
+        }
+        return this.reply(jid, autonomous.response_text, customerPhone);
+      }
       return this.reply(
         jid,
         `✅ Recebi seu comprovante/arquivo e ${forwardingText}. A renovação só será feita depois da confirmação oficial do pagamento.`,
@@ -490,16 +503,33 @@ export class WhatsAppBot {
     if (context?.duplicate) return;
     const respond = (content) => this.reply(jid, content, customerPhone);
     const command = normalizeCommand(text);
-    const customer360 = await this.loadCustomerContext(
-      customerPhone,
-      contextPurposeForCommand(command),
-      { messageId }
-    );
 
     if (isExplicitMenuCommand(command)) {
       await this.setSession(customerPhone, 'menu');
       return respond(menu);
     }
+
+    if (!['awaiting_login', 'awaiting_name', 'awaiting_plan'].includes(context?.sessionState)) {
+      const autonomous = await this.runAutonomousConversation({
+        phone: customerPhone,
+        text,
+        contentType: inbound.kind === 'audio' ? 'AUDIO' : 'TEXT',
+        messageId,
+        planCode: detectPlanCode(command)
+      });
+      if (autonomous?.handled) {
+        if (autonomous.conversation_state) {
+          await this.setSession(customerPhone, autonomous.conversation_state);
+        }
+        return respond(autonomous.response_text);
+      }
+    }
+
+    const customer360 = await this.loadCustomerContext(
+      customerPhone,
+      contextPurposeForCommand(command),
+      { messageId }
+    );
 
     if (isHumanSupportCommand(command)) {
       const support = process.env.SUPPORT_WHATSAPP;
@@ -753,6 +783,38 @@ export class WhatsAppBot {
         purpose,
         code: error.code || null
       }, 'Contexto do cliente indisponível; fallback legado preservado');
+      return null;
+    }
+  }
+
+  async runAutonomousConversation({ phone, text, contentType = 'TEXT', messageId, planCode = null }) {
+    try {
+      const turn = await withTimeout(processAutonomousOperation(this.gateCore, {
+        conversationId: `whatsapp:${phone}`,
+        messageId: messageId || `local:${phone}:${Date.now()}`,
+        phone,
+        text,
+        contentType,
+        planCode
+      }), 15_000, 'o agente de conversação demorou demais');
+      this.logger?.info?.({
+        message_id: messageId || null,
+        customer_id: turn?.customer_id || null,
+        context_snapshot_id: turn?.context_snapshot_id || null,
+        correlation_id: turn?.correlation_id || null,
+        intent: turn?.intent || null,
+        confidence: turn?.confidence || null,
+        policy: turn?.policy_result || null,
+        tool: turn?.proposed_action || null,
+        result: turn?.outcome || 'UNAVAILABLE',
+        response_status: turn?.response_status || null
+      }, 'Turno autônomo consultado');
+      return turn;
+    } catch (error) {
+      this.logger?.warn?.({
+        message_id: messageId || null,
+        code: error.code || null
+      }, 'GateConversationAgent indisponível; compatibility adapter preservado');
       return null;
     }
   }

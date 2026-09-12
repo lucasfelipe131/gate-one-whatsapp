@@ -6,7 +6,7 @@
   "engines": { "node": ">=22" },
   "scripts": {
     "start": "node src/server.js",
-    "check": "node --check src/server.js && node --check src/bot.js && node --check src/gate-core-client.js && node --check src/customer-context.js && node --check src/plans.js && node --check src/conversation.js && node --check src/media.js",
+    "check": "node --check src/server.js && node --check src/bot.js && node --check src/gate-core-client.js && node --check src/customer-context.js && node --check src/plans.js && node --check src/conversation.js && node --check src/media.js && node --check src/autonomous-operations.js",
     "test": "node --test"
   },
   "dependencies": {
