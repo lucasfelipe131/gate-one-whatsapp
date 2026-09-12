@@ -19,6 +19,10 @@ export function validateAutonomousTurn(turn) {
   }
   const text = String(turn.response_text || '').trim();
   if (!text) return { valid: false, code: 'AUTONOMOUS_RESPONSE_EMPTY' };
+  const facts=turn.response_facts || {};
+  if (/caso (foi |est[aá] )?resolvido|problema (foi |est[aá] )?resolvido|servi[cç]o (voltou|normalizado)/i.test(text) &&
+      (!['RESOLVED','CLOSED'].includes(facts.case_status) || !['VERIFIED','HUMAN_VERIFIED'].includes(facts.verification_result))) return {valid:false,code:'SUPPORT_FACT_MISMATCH'};
+  if (/a[cç][aã]o foi (executada|registrada)/i.test(text) && !facts.action_performed) return {valid:false,code:'SUPPORT_ACTION_MISMATCH'};
   for (const rule of FORBIDDEN_CONFIRMATIONS) {
     if (turn.response_facts?.[rule.fact] !== rule.allowed && rule.pattern.test(text)) {
       return { valid: false, code: rule.code };
