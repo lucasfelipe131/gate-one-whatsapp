@@ -6,7 +6,7 @@ function formatDate(value) {
   if (!value) return null;
   const text = String(value);
   const date = /^\d{4}-\d{2}-\d{2}$/.test(text)
-    ? new Date(`${text}T12:00:00`)
+    ? new Date(`${text}T12:00:00.000Z`)
     : new Date(text);
   if (!Number.isFinite(date.getTime())) return null;
   return date.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });
@@ -118,6 +118,36 @@ export function buildPaidContextReply(customer360) {
     return 'O pagamento ainda aparece como pendente. A confirmação oficial vem do provedor; não vou tratá-lo como aprovado antes disso.';
   }
   return 'Ainda não encontrei uma confirmação de pagamento no contexto atual. A equipe pode conferir o comprovante sem iniciar uma renovação automática.';
+}
+
+export function buildRenewalStatusReply(response) {
+  if (!response || response.status === 'FAILED') {
+    if (response?.error?.code === 'CUSTOMER_NOT_FOUND') return 'Não localizei seu cadastro para consultar a renovação.';
+    if (response?.error?.code === 'CONTEXT_UNAVAILABLE') return 'Não consegui consultar a renovação agora. Nenhum resultado será inventado.';
+    return 'Não consegui consultar a renovação agora. Tente novamente em instantes.';
+  }
+  const state = response.data || {};
+  switch (state.decision) {
+    case 'PAYMENT_REQUIRED':
+      return 'Sua solicitação foi identificada. Ainda é necessário criar ou concluir o pagamento.';
+    case 'PAYMENT_PENDING':
+      return 'Há um pagamento pendente. A confirmação precisa vir da fonte financeira oficial.';
+    case 'RENEWAL_ALREADY_IN_PROGRESS':
+      if (state.renewal_status === 'VERIFYING') {
+        return 'O pagamento foi identificado e o resultado da renovação está sendo verificado.';
+      }
+      return `O pagamento foi identificado e a renovação está em processamento (${state.renewal_status}).`;
+    case 'ALREADY_RENEWED':
+      return 'A renovação está concluída e verificada.';
+    case 'READY':
+      return 'O pagamento está confirmado e a renovação está pronta para processamento.';
+    case 'REQUIRES_ACTION':
+      return 'A operação foi pausada com segurança e requer análise humana.';
+    case 'FAILED':
+      return 'A renovação não foi concluída. A falha está registrada para análise.';
+    default:
+      return 'A solicitação foi registrada, mas o estado operacional ainda está em atualização.';
+  }
 }
 
 export { factValue };

@@ -6,6 +6,7 @@ import {
   buildContextGreeting,
   buildPaidContextReply,
   buildPendingOperationReply,
+  buildRenewalStatusReply,
   contextPurposeForCommand,
   customer360FromResponse,
   isIdentifiedCustomer360
@@ -95,6 +96,34 @@ test('extrai somente snapshots v1 bem-sucedidos', () => {
     data: { contract: 'ContextSnapshot.v1', customer360: context }
   }), context);
   assert.equal(customer360FromResponse({ status: 'FAILED', data: null }), null);
+});
+
+test('status estruturado não antecipa sucesso em PROCESSING ou VERIFYING', () => {
+  assert.match(buildRenewalStatusReply({
+    status: 'SUCCESS', data: {
+      decision: 'RENEWAL_ALREADY_IN_PROGRESS', renewal_status: 'PROCESSING'
+    }
+  }), /em processamento.*PROCESSING/i);
+  assert.doesNotMatch(buildRenewalStatusReply({
+    status: 'SUCCESS', data: {
+      decision: 'RENEWAL_ALREADY_IN_PROGRESS', renewal_status: 'VERIFYING'
+    }
+  }), /concluída|sucesso/i);
+  assert.match(buildRenewalStatusReply({
+    status: 'SUCCESS', data: { decision: 'ALREADY_RENEWED', renewal_status: 'COMPLETED' }
+  }), /concluída e verificada/i);
+});
+
+test('paguei sem fonte oficial permanece pendente e falhas são conservadoras', () => {
+  assert.match(buildRenewalStatusReply({
+    status: 'SUCCESS', data: { decision: 'PAYMENT_PENDING' }
+  }), /fonte financeira oficial/i);
+  assert.match(buildRenewalStatusReply({
+    status: 'FAILED', error: { code: 'CONTEXT_UNAVAILABLE' }
+  }), /Nenhum resultado será inventado/i);
+  assert.match(buildRenewalStatusReply({
+    status: 'FAILED', error: { code: 'CUSTOMER_NOT_FOUND' }
+  }), /Não localizei/i);
 });
 
 test('bot solicita contexto pela nova fronteira, preserva fallback e não executa renovação nova', async () => {

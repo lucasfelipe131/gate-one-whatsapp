@@ -164,3 +164,33 @@ test('falha de contexto retorna envelope seguro sem disparar operação financei
   assert.equal(response.error.code, 'CUSTOMER_NOT_FOUND');
   assert.deepEqual(actions, ['customer.context.get']);
 });
+
+test('WhatsApp pode solicitar renovação e consultar estado, nunca executar', async () => {
+  const actions = [];
+  const client = new GateCoreClient({
+    baseUrl: 'https://gate.invalid', secret: 'test-only-secret',
+    fetchImpl: async (_url, options) => {
+      const request = JSON.parse(options.body);
+      actions.push(request);
+      return {
+        ok: true,
+        json: async () => ({
+          contract_version: 1,
+          request_id: request.request_id,
+          correlation_id: request.correlation_id,
+          status: 'SUCCESS',
+          data: { decision: 'PAYMENT_PENDING' },
+          error: null
+        })
+      };
+    }
+  });
+  await client.requestRenewal(CUSTOMER_ID, { subscription_id: CUSTOMER_ID });
+  await client.getRenewalStatus(CUSTOMER_ID, { subscription_id: CUSTOMER_ID });
+  assert.deepEqual(actions.map((request) => request.action), [
+    'renewal.request', 'renewal.status.get'
+  ]);
+  assert.equal(actions[0].actor.capability, 'renewal.request');
+  assert.equal(actions[1].actor.capability, 'renewal.read');
+  assert.ok(actions.every((request) => request.actor.type === 'SERVICE'));
+});
