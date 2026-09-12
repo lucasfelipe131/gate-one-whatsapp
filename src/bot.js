@@ -24,6 +24,7 @@ import {
   isLikelyReceipt,
   isMediaMessage
 } from './media.js';
+import { GateCoreClient } from './gate-core-client.js';
 
 const MAX_MEDIA_BYTES = 12 * 1024 * 1024;
 
@@ -89,6 +90,10 @@ export class WhatsAppBot {
     this.lastDisconnectAt = null;
     this.phoneByLid = new Map();
     this.processedMessageIds = new Map();
+    this.gateCore = new GateCoreClient({
+      baseUrl: process.env.GATE_ONE_URL,
+      secret: process.env.GATE_ONE_SHARED_SECRET
+    });
   }
 
   snapshot() {
@@ -646,35 +651,22 @@ export class WhatsAppBot {
     body,
     { required = false, timeoutMs = 12_000, attempts = 3 } = {}
   ) {
-    const base = process.env.GATE_ONE_URL;
-    const secret = process.env.GATE_ONE_SHARED_SECRET;
-    if (!base || !secret) {
+    if (!this.gateCore.configured) {
       if (required) throw new Error('Integração interna com o Gate One não configurada.');
       return null;
     }
     let lastError = null;
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       try {
-        const response = await withTimeout(
-          fetch(`${base.replace(/\/$/, '')}${path}`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'X-Gate-One-Bot-Secret': secret
-            },
-            body: JSON.stringify(body)
-          }),
+        const data = await withTimeout(
+          this.gateCore.postLegacy(path, body),
           timeoutMs,
           'a consulta ao cadastro demorou demais'
         );
-        const data = await response.json().catch(() => ({}));
-        if (response.ok) return data;
-        lastError = new Error(
-          data.error || data.message || `Gate One respondeu ${response.status}`
-        );
-        if (![429, 502, 503, 504].includes(response.status)) break;
+        return data;
       } catch (error) {
         lastError = error;
+        if (error.retryable === false) break;
       }
       if (attempt < attempts - 1) await wait(300 * (attempt + 1));
     }
