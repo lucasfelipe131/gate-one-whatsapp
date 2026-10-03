@@ -43,6 +43,10 @@ app.post('/api/gate-one/notify', async (request, reply) => {
 
 const port = Number(process.env.PORT || 3001);
 await app.listen({ port, host: '0.0.0.0' });
-bot.connect().catch((error) => {
-  app.log.error({ error: error.message }, 'Falha na conexão automática do WhatsApp');
-});
+if (process.env.GATE_MIGRATION_HOLD === 'true') {
+  app.log.info('Conexão automática pausada durante a transferência do volume.');
+} else {
+  bot.connect().catch((error) => {
+    app.log.error({ error: error.message }, 'Falha na conexão automática do WhatsApp');
+  });
+}
