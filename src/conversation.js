@@ -17,9 +17,11 @@ export function isExplicitMenuCommand(value) {
 }
 
 export function isHumanSupportCommand(value) {
-  return /^(4|ATENDENTE|SUPORTE|HUMANO|FALAR COM ATENDENTE)$/.test(
-    normalizeCommand(value)
-  );
+  const text = normalizeCommand(value).replace(/[^A-Z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (/\bNAO (QUERO|PRECISO|DESEJO)\b/.test(text)) return false;
+  return /^(4|ATENDENTE|SUPORTE|HUMANO)$/.test(text) ||
+    /\b(FALAR|CONVERSAR) COM (UM |UMA |O |A )?(ATENDENTE|PESSOA|HUMANO|ALGUEM|EQUIPE)\b/.test(text) ||
+    /\b(QUERO|PRECISO|CHAME|CHAMA) (DE )?(UM |UMA |O |A )?(ATENDENTE|HUMANO|AJUDA HUMANA)\b/.test(text);
 }
 
 export function isProbableName(value) {

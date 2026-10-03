@@ -1,14 +1,14 @@
 # Gate One WhatsApp
 
-Serviço separado de atendimento do Gate One Pro por QR Code. Ele mantém a sessão em um Volume da Railway e consulta o Gate One por uma API interna protegida por segredo compartilhado.
+Serviço de atendimento do Gate One Pro por QR Code, dentro do mesmo projeto Railway do servidor principal. Ele mantém a sessão em um Volume próprio e consulta o Gate One por uma API interna protegida por segredo compartilhado. Produção e staging usam ambientes distintos desse projeto.
 
 ## Publicar na Railway
 
 1. Crie um repositório GitHub chamado `gate-one-whatsapp` e envie esta pasta.
-2. Na Railway, crie **New Project → Deploy from GitHub Repo** e selecione o repositório.
+2. Na Railway, abra o projeto principal **GATE ECOSSISTEM**, escolha **Add → GitHub Repo** e selecione o repositório. Use um serviço próprio; não crie outro projeto.
 3. Em **Variables**, preencha os valores de `.env.example` e gere um `ADMIN_TOKEN` com mais de 24 caracteres.
 4. Em **Storage**, adicione um Volume montado em `/data`.
-5. Gere um domínio público e abra-o. Informe o `ADMIN_TOKEN` no primeiro acesso, clique em **Gerar QR Code** e leia o QR pelo WhatsApp.
+5. Na primeira instalação, gere um domínio e conecte o WhatsApp pelo QR. Em uma consolidação, preserve primeiro o volume e seus arquivos de sessão, mantenha apenas uma instância do bot conectada e confira a conexão antes de remover o serviço antigo. O botão **Desconectar** apaga a sessão: não o use para migrar.
 
 ## Aviso de pagamento para o responsável
 

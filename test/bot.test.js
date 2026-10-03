@@ -32,6 +32,14 @@ test('reconhece todos os planos e valores do catálogo Gate One', () => {
   assert.equal(detectPlanCode('atendente'), null);
 });
 
+test('pedido natural de atendente pode sair da identificação sem confundir uma menção ou recusa', () => {
+  for (const text of ['quero falar com uma pessoa', 'preciso de um atendente', 'pode chamar? quero conversar com alguém']) {
+    assert.equal(isHumanSupportCommand(text), true, text);
+  }
+  assert.equal(isHumanSupportCommand('uma pessoa me indicou'), false);
+  assert.equal(isHumanSupportCommand('não quero falar com um atendente'), false);
+});
+
 test('distingue nome de comandos do atendimento', () => {
   assert.equal(isProbableName('Lucas Felipe de Oliveira'), true);
   assert.equal(isProbableName('Ana'), true);
