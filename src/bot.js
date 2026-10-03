@@ -509,7 +509,7 @@ export class WhatsAppBot {
       return respond(menu);
     }
 
-    if (!['awaiting_login', 'awaiting_name', 'awaiting_plan'].includes(context?.sessionState)) {
+    if (isHumanSupportCommand(command) || !['awaiting_login', 'awaiting_name', 'awaiting_plan'].includes(context?.sessionState)) {
       const autonomous = await this.runAutonomousConversation({
         phone: customerPhone,
         text,

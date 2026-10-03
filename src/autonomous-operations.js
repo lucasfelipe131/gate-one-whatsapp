@@ -20,6 +20,9 @@ export function validateAutonomousTurn(turn) {
   const text = String(turn.response_text || '').trim();
   if (!text) return { valid: false, code: 'AUTONOMOUS_RESPONSE_EMPTY' };
   const facts=turn.response_facts || {};
+  if (facts.checkout_url && (!/^https?:\/\//i.test(facts.checkout_url) ||
+      (facts.simulated === true && !text.includes('[Simulação]')))) return {valid:false,code:'CHECKOUT_FACT_MISMATCH'};
+  if (/encaminhado para a equipe|Registrei o atendimento/i.test(text) && !facts.handoff_id) return {valid:false,code:'HANDOFF_FACT_MISMATCH'};
   if (/caso (foi |est[aá] )?resolvido|problema (foi |est[aá] )?resolvido|servi[cç]o (voltou|normalizado)/i.test(text) &&
       (!['RESOLVED','CLOSED'].includes(facts.case_status) || !['VERIFIED','HUMAN_VERIFIED'].includes(facts.verification_result))) return {valid:false,code:'SUPPORT_FACT_MISMATCH'};
   if (/a[cç][aã]o foi (executada|registrada)/i.test(text) && !facts.action_performed) return {valid:false,code:'SUPPORT_ACTION_MISMATCH'};
