@@ -3,6 +3,8 @@ import fastifyStatic from '@fastify/static';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { WhatsAppBot } from './bot.js';
+import { DeliveryJournal } from './delivery-journal.js';
+import { createHash,timingSafeEqual } from 'node:crypto';
 
 const app = Fastify({
   logger: {
@@ -12,6 +14,8 @@ const app = Fastify({
 });
 const here = dirname(fileURLToPath(import.meta.url));
 const bot = new WhatsAppBot({ logger: app.log });
+const deliveries=new DeliveryJournal({bot,directory:join(dirname(process.env.AUTH_DIR||'./auth'),'whatsapp-deliveries')});
+const sameSecret=(a,b)=>Boolean(a&&b)&&timingSafeEqual(createHash('sha256').update(String(a)).digest(),createHash('sha256').update(String(b)).digest());
 const adminToken = process.env.ADMIN_TOKEN;
 const notifySecret = process.env.GATE_ONE_NOTIFY_SECRET;
 if (!adminToken || adminToken.length < 24) app.log.warn('ADMIN_TOKEN deve ter ao menos 24 caracteres antes do uso em produção.');
@@ -33,16 +37,20 @@ app.post('/api/disconnect', async () => { await bot.disconnect(); return bot.sna
 // Called only by the Gate One main service after Mercado Pago confirms a payment.
 app.post('/api/gate-one/notify', async (request, reply) => {
   const provided = String(request.headers['x-gate-one-notify-secret'] || '');
-  if (!notifySecret || provided !== notifySecret) return reply.code(401).send({ error: 'Não autorizado.' });
+  if (!sameSecret(notifySecret,provided)) return reply.code(401).send({ error: 'Não autorizado.' });
   const body = request.body || {};
   if (!body.to || !body.text) return reply.code(400).send({ error: 'Destino e mensagem são obrigatórios.' });
-  const sent = await bot.sendTo(body.to, body.text);
-  if (!sent) return reply.code(503).send({ error: 'WhatsApp ainda não está conectado.' });
-  return { ok: true };
+  try {return await deliveries.deliver(body);} catch(error) {
+    const code=error.code||'QR_TRANSPORT_UNCERTAIN';
+    const status=['INVALID_DELIVERY','INVALID_DELIVERY_KEY'].includes(code)?400:
+      ['DELIVERY_REQUIRES_REVIEW','DELIVERY_KEY_CONFLICT'].includes(code)?409:503;
+    app.log.warn({code},'Entrega automática interrompida');
+    return reply.code(status).send({ok:false,code});
+  }
 });
 
 const port = Number(process.env.PORT || 3001);
 await app.listen({ port, host: '0.0.0.0' });
-bot.connect().catch((error) => {
+if(process.env.GATE_MIGRATION_HOLD!=='true') bot.connect().catch((error) => {
   app.log.error({ error: error.message }, 'Falha na conexão automática do WhatsApp');
 });
