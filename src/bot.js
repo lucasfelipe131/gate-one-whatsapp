@@ -45,6 +45,7 @@ const menu = `Claro! Estas são as opções do *${process.env.BRAND_NAME || 'Gat
 *3* Renovar meu plano
 *4* Falar com a equipe
 *5* Novidades do catálogo
+*6* Fazer cadastro ou atualizar meus dados
 
 Você também pode simplesmente me contar o que precisa, por texto ou áudio.`;
 
@@ -504,6 +505,9 @@ export class WhatsAppBot {
     const respond = (content) => this.reply(jid, content, customerPhone);
     const command = normalizeCommand(text);
 
+    const registration = await this.runSelfRegistration({ phone: customerPhone, text, messageId });
+    if (registration?.handled) return respond(registration.response_text);
+
     if (isExplicitMenuCommand(command)) {
       await this.setSession(customerPhone, 'menu');
       return respond(menu);
@@ -817,6 +821,17 @@ export class WhatsAppBot {
       }, 'GateConversationAgent indisponível; compatibility adapter preservado');
       return null;
     }
+  }
+
+  async runSelfRegistration({ phone, text, messageId }) {
+    const result = await this.gateOne('/api/integrations/whatsapp/registration', {
+      whatsapp: phone, text, messageId: messageId || `local:${phone}:${Date.now()}`
+    }, { required: true, attempts: 1, timeoutMs: 8000 });
+    if (typeof result?.handled !== 'boolean' || (result.handled &&
+        (typeof result.response_text !== 'string' || !result.response_text.trim()))) {
+      throw new Error('REGISTRATION_RESPONSE_INVALID');
+    }
+    return result;
   }
 
   async registerInbound(phone, displayName, text, messageId) {

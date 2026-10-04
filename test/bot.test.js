@@ -32,6 +32,13 @@ test('reconhece todos os planos e valores do catálogo Gate One', () => {
   assert.equal(detectPlanCode('atendente'), null);
 });
 
+test('natural plan choice is preserved; questions, refusal and multiple choices do not silently select a plan', () => {
+  assert.equal(detectPlanCode('quero renovar trimestral'), 'quarterly');
+  assert.equal(detectPlanCode('pode gerar a renovação de 6 meses'), 'semiannual');
+  assert.equal(detectPlanCode('quero o plano anual'), 'annual');
+  for (const text of ['não quero renovar mensal', 'quanto custa renovar trimestral?', 'quero mensal ou anual', 'mensalidade']) assert.equal(detectPlanCode(text), null, text);
+});
+
 test('pedido natural de atendente pode sair da identificação sem confundir uma menção ou recusa', () => {
   for (const text of ['quero falar com uma pessoa', 'preciso de um atendente', 'pode chamar? quero conversar com alguém']) {
     assert.equal(isHumanSupportCommand(text), true, text);
