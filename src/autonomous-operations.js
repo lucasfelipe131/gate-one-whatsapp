@@ -18,6 +18,13 @@ export function validateAutonomousTurn(turn) {
     return { valid: false, code: 'AUTONOMOUS_CONTRACT_INVALID' };
   }
   const text = String(turn.response_text || '').trim();
+  if (turn.suppress_reply === true) {
+    const handoff = turn.response_facts?.handoff_id;
+    const pending = turn.outcome === 'HANDOFF_PENDING' || turn.duplicate === true;
+    return handoff && pending && turn.conversation_state === 'human_handoff' && !text
+      ? { valid: true, code: null }
+      : { valid: false, code: 'AUTONOMOUS_SUPPRESSION_INVALID' };
+  }
   if (!text) return { valid: false, code: 'AUTONOMOUS_RESPONSE_EMPTY' };
   const facts=turn.response_facts || {};
   if (facts.checkout_url && (!/^https?:\/\//i.test(facts.checkout_url) ||

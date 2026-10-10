@@ -13,6 +13,7 @@ import {
   isExplicitMenuCommand,
   isGreetingCommand,
   isHumanSupportCommand,
+  isPaymentOptionsCommand,
   isProbableName,
   normalizeCommand,
   phoneFromWhatsAppJid,
@@ -46,8 +47,9 @@ const menu = `Claro! Estas são as opções do *${process.env.BRAND_NAME || 'Gat
 *4* Falar com a equipe
 *5* Novidades do catálogo
 *6* Fazer cadastro ou atualizar meus dados
+*7* Formas de pagamento
 
-Você também pode simplesmente me contar o que precisa, por texto ou áudio.`;
+Você também pode pedir *PIX*, *CARTÃO*, *BOLETO* ou consultar *PAGUEI*, por texto ou áudio.`;
 
 const naturalWelcome =
   'Pode me contar do seu jeito o que você precisa — por texto, áudio, foto ou PDF.';
@@ -101,6 +103,7 @@ export class WhatsAppBot {
     this.lastDisconnectAt = null;
     this.phoneByLid = new Map();
     this.processedMessageIds = new Map();
+    this.messageQueues = new Map();
     this.gateCore = new GateCoreClient({
       baseUrl: process.env.GATE_ONE_URL,
       secret: process.env.GATE_ONE_SHARED_SECRET
@@ -246,7 +249,7 @@ export class WhatsAppBot {
       if (type !== 'notify') return;
       for (const message of messages) {
         try {
-          await this.#handleMessage(message);
+          await this.handleMessage(message);
         } catch (error) {
           this.lastError = `Falha ao atender uma mensagem: ${error.message}`;
           this.logger?.error?.(
@@ -360,7 +363,7 @@ export class WhatsAppBot {
       messageId || undefined
     );
     if (context?.duplicate) return;
-    await this.loadCustomerContext(customerPhone, 'SUPPORT', { messageId });
+    if (!context?.automationPaused) await this.loadCustomerContext(customerPhone, 'SUPPORT', { messageId });
 
     let forwarded = false;
     try {
@@ -378,6 +381,7 @@ export class WhatsAppBot {
       );
     }
 
+    if (context?.automationPaused) return;
     await this.setSession(customerPhone, 'support');
     const forwardingText = forwarded
       ? 'encaminhei para a equipe conferir'
@@ -391,10 +395,7 @@ export class WhatsAppBot {
         messageId
       });
       if (autonomous?.handled) {
-        if (autonomous.conversation_state) {
-          await this.setSession(customerPhone, autonomous.conversation_state);
-        }
-        return this.reply(jid, autonomous.response_text, customerPhone);
+        return this.replyAutonomous(jid, autonomous, customerPhone);
       }
       return this.reply(
         jid,
@@ -407,6 +408,18 @@ export class WhatsAppBot {
       `✅ Recebi sua ${inbound.kind === 'image' ? 'imagem' : inbound.kind === 'video' ? 'vídeo' : 'arquivo'} e ${forwardingText}.`,
       customerPhone
     );
+  }
+
+  async handleMessage(message) {
+    if (!this.socket || message.key.fromMe || message.key.remoteJid?.endsWith('@g.us')) return;
+    const customerJid = await resolveCustomerJid(message.key, this.phoneByLid,
+      (lidJid) => this.socket?.signalRepository?.lidMapping?.getPNForLID(lidJid));
+    const key = customerJid || message.key.remoteJid;
+    const previous = this.messageQueues.get(key) || Promise.resolve();
+    const current = previous.catch(() => {}).then(() => this.#handleMessage(message));
+    this.messageQueues.set(key, current);
+    try { return await current; }
+    finally { if (this.messageQueues.get(key) === current) this.messageQueues.delete(key); }
   }
 
   async #handleMessage(message) {
@@ -461,7 +474,7 @@ export class WhatsAppBot {
           messageId || undefined
         );
         if (context?.duplicate) return;
-        await this.loadCustomerContext(customerPhone, 'SUPPORT', { messageId });
+        if (!context?.automationPaused) await this.loadCustomerContext(customerPhone, 'SUPPORT', { messageId });
         let forwarded = false;
         if (buffer) {
           forwarded = await this.#forwardMediaForReview({
@@ -471,6 +484,7 @@ export class WhatsAppBot {
             displayName: context?.customer?.name || message.pushName
           }).catch(() => false);
         }
+        if (context?.automationPaused) return;
         await this.setSession(customerPhone, 'support');
         return this.reply(
           jid,
@@ -488,7 +502,7 @@ export class WhatsAppBot {
         unknownText,
         messageId || undefined
       );
-      if (context?.duplicate) return;
+      if (context?.duplicate || context?.automationPaused) return;
       return this.reply(
         jid,
         'Recebi sua mensagem, mas este formato não permite leitura automática. Envie em *texto*, *áudio*, *imagem* ou *PDF*, ou digite *ATENDENTE*.',
@@ -501,7 +515,7 @@ export class WhatsAppBot {
       inboundLogText,
       messageId || undefined
     );
-    if (context?.duplicate) return;
+    if (context?.duplicate || context?.automationPaused) return;
     const respond = (content) => this.reply(jid, content, customerPhone);
     const command = normalizeCommand(text);
 
@@ -513,7 +527,9 @@ export class WhatsAppBot {
       return respond(menu);
     }
 
-    if (isHumanSupportCommand(command) || !['awaiting_login', 'awaiting_name', 'awaiting_plan'].includes(context?.sessionState)) {
+    if (isHumanSupportCommand(command) || isPaymentOptionsCommand(command) ||
+        (context?.sessionState === 'awaiting_plan' && detectPlanCode(command)) ||
+        !['awaiting_login', 'awaiting_name', 'awaiting_plan'].includes(context?.sessionState)) {
       const autonomous = await this.runAutonomousConversation({
         phone: customerPhone,
         text,
@@ -522,10 +538,7 @@ export class WhatsAppBot {
         planCode: detectPlanCode(command)
       });
       if (autonomous?.handled) {
-        if (autonomous.conversation_state) {
-          await this.setSession(customerPhone, autonomous.conversation_state);
-        }
-        return respond(autonomous.response_text);
+        return this.replyAutonomous(jid, autonomous, customerPhone);
       }
     }
 
@@ -540,8 +553,8 @@ export class WhatsAppBot {
       await this.setSession(customerPhone, 'support');
       return respond(
         support
-          ? `Certo. Deixei o histórico organizado para a equipe continuar por aqui. Se preferir, você também pode chamar: https://wa.me/${support}`
-          : 'Certo. Deixei o histórico organizado e a equipe vai continuar por aqui.'
+          ? `Certo. Deixei o histórico organizado para a equipe continuar por aqui. Se a espera demorar, digite MENU para voltar às opções automáticas. Se preferir, você também pode chamar: https://wa.me/${support}`
+          : 'Certo. Deixei o histórico organizado e a equipe vai continuar por aqui. Se a espera demorar, digite MENU para voltar às opções automáticas.'
       );
     }
 
@@ -699,7 +712,14 @@ export class WhatsAppBot {
     return null;
   }
 
+  async replyAutonomous(jid, turn, phone) {
+    if (turn.suppress_reply === true) return;
+    if (turn.conversation_state) await this.setSession(phone, turn.conversation_state);
+    return this.reply(jid, turn.response_text, phone);
+  }
+
   async reply(jid, text, customerJid = jid) {
+    if (typeof text !== 'string' || !text.trim()) return;
     const sent = await this.socket?.sendMessage(jid, { text });
     this.logOutbound(customerJid, text, sent?.key?.id).catch(() => {});
     return sent;

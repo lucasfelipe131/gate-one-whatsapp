@@ -16,6 +16,11 @@ export function isExplicitMenuCommand(value) {
   return /^(MENU|INICIO|0)$/.test(normalizeCommand(value));
 }
 
+export function isPaymentOptionsCommand(value) {
+  return /^(7|FORMAS DE PAGAMENTO|MEIOS DE PAGAMENTO|COMO PAGAR)$/.test(normalizeCommand(value)) ||
+    /\b(ACEITA|POSSO PAGAR|DA PARA PAGAR|TEM)\b.*\b(PIX|CARTAO|BOLETO)\b/.test(normalizeCommand(value));
+}
+
 export function isHumanSupportCommand(value) {
   const text = normalizeCommand(value).replace(/[^A-Z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
   if (/\bNAO (QUERO|PRECISO|DESEJO)\b/.test(text)) return false;
