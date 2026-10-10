@@ -527,7 +527,9 @@ export class WhatsAppBot {
       return respond(menu);
     }
 
-    if (isHumanSupportCommand(command) || isPaymentOptionsCommand(command) || !['awaiting_login', 'awaiting_name', 'awaiting_plan'].includes(context?.sessionState)) {
+    if (isHumanSupportCommand(command) || isPaymentOptionsCommand(command) ||
+        (context?.sessionState === 'awaiting_plan' && detectPlanCode(command)) ||
+        !['awaiting_login', 'awaiting_name', 'awaiting_plan'].includes(context?.sessionState)) {
       const autonomous = await this.runAutonomousConversation({
         phone: customerPhone,
         text,
@@ -551,8 +553,8 @@ export class WhatsAppBot {
       await this.setSession(customerPhone, 'support');
       return respond(
         support
-          ? `Certo. Deixei o histórico organizado para a equipe continuar por aqui. Se preferir, você também pode chamar: https://wa.me/${support}`
-          : 'Certo. Deixei o histórico organizado e a equipe vai continuar por aqui.'
+          ? `Certo. Deixei o histórico organizado para a equipe continuar por aqui. Se a espera demorar, digite MENU para voltar às opções automáticas. Se preferir, você também pode chamar: https://wa.me/${support}`
+          : 'Certo. Deixei o histórico organizado e a equipe vai continuar por aqui. Se a espera demorar, digite MENU para voltar às opções automáticas.'
       );
     }
 
