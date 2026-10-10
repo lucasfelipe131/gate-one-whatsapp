@@ -13,6 +13,7 @@ import {
   isExplicitMenuCommand,
   isGreetingCommand,
   isHumanSupportCommand,
+  isPaymentOptionsCommand,
   isProbableName,
   normalizeCommand,
   phoneFromWhatsAppJid,
@@ -46,8 +47,9 @@ const menu = `Claro! Estas são as opções do *${process.env.BRAND_NAME || 'Gat
 *4* Falar com a equipe
 *5* Novidades do catálogo
 *6* Fazer cadastro ou atualizar meus dados
+*7* Formas de pagamento
 
-Você também pode simplesmente me contar o que precisa, por texto ou áudio.`;
+Você também pode pedir *PIX*, *CARTÃO*, *BOLETO* ou consultar *PAGUEI*, por texto ou áudio.`;
 
 const naturalWelcome =
   'Pode me contar do seu jeito o que você precisa — por texto, áudio, foto ou PDF.';
@@ -513,7 +515,7 @@ export class WhatsAppBot {
       return respond(menu);
     }
 
-    if (isHumanSupportCommand(command) || !['awaiting_login', 'awaiting_name', 'awaiting_plan'].includes(context?.sessionState)) {
+    if (isHumanSupportCommand(command) || isPaymentOptionsCommand(command) || !['awaiting_login', 'awaiting_name', 'awaiting_plan'].includes(context?.sessionState)) {
       const autonomous = await this.runAutonomousConversation({
         phone: customerPhone,
         text,

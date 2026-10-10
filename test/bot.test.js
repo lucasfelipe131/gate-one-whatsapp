@@ -5,11 +5,19 @@ import {
   isExplicitMenuCommand,
   isGreetingCommand,
   isHumanSupportCommand,
+  isPaymentOptionsCommand,
   isProbableName,
   normalizeBrazilianPhoneDigits,
   phoneFromWhatsAppJid,
   resolveCustomerJid
 } from '../src/conversation.js';
+
+test('payment options can interrupt identity collection without granting payment access', () => {
+  for (const text of ['7', 'FORMAS DE PAGAMENTO', 'posso pagar no cartão?', 'tem boleto?']) {
+    assert.equal(isPaymentOptionsCommand(text), true, text);
+  }
+  assert.equal(isPaymentOptionsCommand('quero pagar no cartão'), false);
+});
 
 test('separa saudação, menu explícito e pedido de atendimento humano', () => {
   assert.equal(isGreetingCommand('Oi'), true);
