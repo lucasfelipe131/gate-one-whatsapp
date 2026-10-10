@@ -362,8 +362,8 @@ export class WhatsAppBot {
       logText,
       messageId || undefined
     );
-    if (context?.duplicate || context?.automationPaused) return;
-    await this.loadCustomerContext(customerPhone, 'SUPPORT', { messageId });
+    if (context?.duplicate) return;
+    if (!context?.automationPaused) await this.loadCustomerContext(customerPhone, 'SUPPORT', { messageId });
 
     let forwarded = false;
     try {
@@ -381,6 +381,7 @@ export class WhatsAppBot {
       );
     }
 
+    if (context?.automationPaused) return;
     await this.setSession(customerPhone, 'support');
     const forwardingText = forwarded
       ? 'encaminhei para a equipe conferir'
@@ -472,8 +473,8 @@ export class WhatsAppBot {
           inboundLogText,
           messageId || undefined
         );
-        if (context?.duplicate || context?.automationPaused) return;
-        await this.loadCustomerContext(customerPhone, 'SUPPORT', { messageId });
+        if (context?.duplicate) return;
+        if (!context?.automationPaused) await this.loadCustomerContext(customerPhone, 'SUPPORT', { messageId });
         let forwarded = false;
         if (buffer) {
           forwarded = await this.#forwardMediaForReview({
@@ -483,6 +484,7 @@ export class WhatsAppBot {
             displayName: context?.customer?.name || message.pushName
           }).catch(() => false);
         }
+        if (context?.automationPaused) return;
         await this.setSession(customerPhone, 'support');
         return this.reply(
           jid,
