@@ -46,8 +46,9 @@ const menu = `Claro! Estas são as opções do *${process.env.BRAND_NAME || 'Gat
 *3* Renovar meu plano
 *4* Falar com a equipe
 *5* Novidades do catálogo
-*6* Fazer cadastro ou atualizar meus dados
+*6* Cadastro e meus dados na área do cliente
 *7* Formas de pagamento
+*8* Área do cliente: login e pagamentos
 
 Você também pode pedir *PIX*, *CARTÃO*, *BOLETO* ou consultar *PAGUEI*, por texto ou áudio.`;
 
@@ -519,6 +520,13 @@ export class WhatsAppBot {
     const respond = (content) => this.reply(jid, content, customerPhone);
     const command = normalizeCommand(text);
 
+    if (['6','8','PORTAL','AREA DO CLIENTE','MINHA AREA','CADASTRO','CADASTRO ONLINE','MEU CADASTRO','ATUALIZAR MEUS DADOS','MINHA CONTA','MEUS PAGAMENTOS'].includes(command) ||
+        /^(AUTO ?CADASTRO|ME CADASTRAR|QUERO ME CADASTRAR|ATUALIZAR( MEUS)? DADOS|COMPLETAR( MEU)? CADASTRO|FAZER( MEU)? CADASTRO|QUERO ASSINAR|QUERO CONTRATAR|AINDA NAO SOU CLIENTE)$/.test(command)) {
+      const link=await this.customerPortalLink(customerPhone,messageId);
+      if(link) return respond(`Sua área do cliente Gate One Pro:\n${link}\n\nVeja seu login, acompanhe os pagamentos e complete seu cadastro com nome e e-mail opcional, sem CPF. O link vale por 15 minutos e é de uso único. Não compartilhe. Para obter outro, envie PORTAL. No cadastro você poderá ler o aviso de privacidade e escolher se quer receber avisos.`);
+      return respond('Não consegui abrir sua área do cliente agora. Tente novamente enviando PORTAL ou digite ATENDENTE.');
+    }
+
     const registration = await this.runSelfRegistration({ phone: customerPhone, text, messageId });
     if (registration?.handled) return respond(registration.response_text);
 
@@ -538,6 +546,10 @@ export class WhatsAppBot {
         planCode: detectPlanCode(command)
       });
       if (autonomous?.handled) {
+        if (autonomous.response_facts?.checkout_url && !autonomous.suppress_reply) {
+          const link=await this.customerPortalLink(customerPhone,`${messageId}:payment`);
+          if(link) autonomous.response_text+=`\n\nAcompanhe seus pagamentos e dados na área do cliente:\n${link}\nLink pessoal, válido por 15 minutos. Para obter outro, envie PORTAL.`;
+        }
         return this.replyAutonomous(jid, autonomous, customerPhone);
       }
     }
@@ -852,6 +864,15 @@ export class WhatsAppBot {
       throw new Error('REGISTRATION_RESPONSE_INVALID');
     }
     return result;
+  }
+
+  async customerPortalLink(phone,messageId) {
+    try {
+      const result=await this.gateOne('/api/integrations/whatsapp/portal',{whatsapp:phone,messageId:messageId || `portal:${phone}:${Date.now()}`},{required:true,attempts:1,timeoutMs:8000});
+      const url=new URL(result?.portalUrl);
+      const expected=new URL(process.env.GATE_ONE_BASE_URL || process.env.GATE_ONE_URL || this.baseUrl || 'https://gateoneserver-production.up.railway.app');
+      return url.origin===expected.origin && url.pathname==='/cliente' && /^#[A-Za-z0-9_-]{32,100}$/.test(url.hash) ? url.href : null;
+    } catch(error) { this.logger?.warn?.({code:'PORTAL_LINK_UNAVAILABLE'},'Área do cliente indisponível'); return null; }
   }
 
   async registerInbound(phone, displayName, text, messageId) {
