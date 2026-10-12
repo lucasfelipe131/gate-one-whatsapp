@@ -41,14 +41,10 @@ const MAX_MEDIA_BYTES = 12 * 1024 * 1024;
 
 const menu = `Claro! Estas são as opções do *${process.env.BRAND_NAME || 'Gate One Pro'}*:
 
-*1* Planos e valores
-*2* Minha conta, acesso e vencimento
-*3* Renovar meu plano
+*1* Área do cliente — usuário, senha, DNS, planos e renovação
+*2* Guias de instalação na TV
+*3* Avisos e novidades
 *4* Falar com a equipe
-*5* Novidades do catálogo
-*6* Cadastro e meus dados na área do cliente
-*7* Formas de pagamento
-*8* Área do cliente: login e pagamentos
 
 Você também pode pedir *PIX*, *CARTÃO*, *BOLETO* ou consultar *PAGUEI*, por texto ou áudio.`;
 
@@ -520,10 +516,17 @@ export class WhatsAppBot {
     const respond = (content) => this.reply(jid, content, customerPhone);
     const command = normalizeCommand(text);
 
-    if (['6','8','PORTAL','AREA DO CLIENTE','MINHA AREA','CADASTRO','CADASTRO ONLINE','MEU CADASTRO','ATUALIZAR MEUS DADOS','MINHA CONTA','MEUS PAGAMENTOS'].includes(command) ||
+    let portalSection;
+    if (['GUIAS','GUIAS DE INSTALACAO','INSTALAR','COMO INSTALAR','INSTALAR NA TV'].includes(command)) portalSection='guias';
+    else if (command==='AVISOS') portalSection='avisos';
+    else if (['5','NOVIDADES','CONTEUDOS','CONTEUDO','LANCAMENTOS'].includes(command)) portalSection='novidades';
+    else if (['MEUS PAGAMENTOS','MEUSPAGAMENTOS','RENOVACAO'].includes(command) || /^(QUERO )?RENOVAR( (MEU|O) PLANO)?$/.test(command)) portalSection='pagamentos';
+    if (context?.sessionState==='menu' && ['1','2','3'].includes(command)) portalSection=({1:null,2:'guias',3:'avisos'})[command];
+    if (portalSection!==undefined || ['6','8','PORTAL','AREA DO CLIENTE','MINHA AREA','CADASTRO','CADASTRO ONLINE','MEU CADASTRO','ATUALIZAR MEUS DADOS','MINHA CONTA'].includes(command) ||
         /^(AUTO ?CADASTRO|ME CADASTRAR|QUERO ME CADASTRAR|ATUALIZAR( MEUS)? DADOS|COMPLETAR( MEU)? CADASTRO|FAZER( MEU)? CADASTRO|QUERO ASSINAR|QUERO CONTRATAR|AINDA NAO SOU CLIENTE)$/.test(command)) {
-      const link=await this.customerPortalLink(customerPhone,messageId);
-      if(link) return respond(`Sua área do cliente Gate One Pro:\n${link}\n\nVeja seu login, acompanhe os pagamentos e complete seu cadastro com nome e e-mail opcional, sem CPF. O link vale por 15 minutos e é de uso único. Não compartilhe. Para obter outro, envie PORTAL. No cadastro você poderá ler o aviso de privacidade e escolher se quer receber avisos.`);
+      const link=await this.customerPortalLink(customerPhone,messageId,portalSection);
+      const description=({guias:'Guias, aplicativos e vídeos para instalar na sua TV.',avisos:'Avisos do serviço e acesso às novidades.',novidades:'Novidades e publicações do canal do Telegram.',pagamentos:'Escolha seu plano e acompanhe seus pagamentos.'})[portalSection] || 'Seu usuário, senha, DNS, renovação e cadastro básico sem CPF ficam na área do cliente.';
+      if(link) return respond(`Sua área do cliente Gate One Pro:\n${link}\n\n${description} Link pessoal de uso único, válido por 15 minutos. Não compartilhe.`);
       return respond('Não consegui abrir sua área do cliente agora. Tente novamente enviando PORTAL ou digite ATENDENTE.');
     }
 
@@ -547,7 +550,7 @@ export class WhatsAppBot {
       });
       if (autonomous?.handled) {
         if (autonomous.response_facts?.checkout_url && !autonomous.suppress_reply) {
-          const link=await this.customerPortalLink(customerPhone,`${messageId}:payment`);
+          const link=await this.customerPortalLink(customerPhone,`${messageId}:payment`,'pagamentos');
           if(link) autonomous.response_text+=`\n\nAcompanhe seus pagamentos e dados na área do cliente:\n${link}\nLink pessoal, válido por 15 minutos. Para obter outro, envie PORTAL.`;
         }
         return this.replyAutonomous(jid, autonomous, customerPhone);
@@ -575,14 +578,6 @@ export class WhatsAppBot {
       return respond(
         plans ||
           '*Planos Gate One Pro*\n\n• Mensal — R$ 30,00\n• Trimestral — R$ 85,00\n• Semestral — R$ 150,00\n• Anual — R$ 270,00\n\nSe quiser renovar, basta me dizer o nome do plano.'
-      );
-    }
-
-    if (['5', 'NOVIDADES', 'CONTEUDOS', 'CONTEUDO', 'LANCAMENTOS'].includes(command)) {
-      const content = await this.latestContent();
-      return respond(
-        content ||
-          'As novidades ainda estão sendo sincronizadas. Tente novamente mais tarde ou digite *ATENDENTE*.'
       );
     }
 
@@ -866,12 +861,15 @@ export class WhatsAppBot {
     return result;
   }
 
-  async customerPortalLink(phone,messageId) {
+  async customerPortalLink(phone,messageId,section) {
+    if(section!==undefined && section!==null && !['guias','avisos','novidades','pagamentos'].includes(section)) return null;
     try {
       const result=await this.gateOne('/api/integrations/whatsapp/portal',{whatsapp:phone,messageId:messageId || `portal:${phone}:${Date.now()}`},{required:true,attempts:1,timeoutMs:8000});
       const url=new URL(result?.portalUrl);
       const expected=new URL(process.env.GATE_ONE_BASE_URL || process.env.GATE_ONE_URL || this.baseUrl || 'https://gateoneserver-production.up.railway.app');
-      return url.origin===expected.origin && url.pathname==='/cliente' && /^#[A-Za-z0-9_-]{32,100}$/.test(url.hash) ? url.href : null;
+      if(url.protocol!=='https:' || url.origin!==expected.origin || url.username || url.password || url.search || url.pathname!=='/cliente' || !/^#[A-Za-z0-9_-]{32,100}$/.test(url.hash)) return null;
+      if(section)url.searchParams.set('aba',section);
+      return url.href;
     } catch(error) { this.logger?.warn?.({code:'PORTAL_LINK_UNAVAILABLE'},'Área do cliente indisponível'); return null; }
   }
 
