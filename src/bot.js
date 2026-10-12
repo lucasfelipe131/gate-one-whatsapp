@@ -2,6 +2,7 @@ import makeWASocket, {
   DisconnectReason,
   downloadMediaMessage,
   fetchLatestBaileysVersion,
+  generateMessageIDV2,
   makeCacheableSignalKeyStore,
   useMultiFileAuthState
 } from '@whiskeysockets/baileys';
@@ -38,6 +39,9 @@ import {
 } from './customer-context.js';
 
 const MAX_MEDIA_BYTES = 12 * 1024 * 1024;
+const OFFLINE_MESSAGE_MAX_AGE_MS = 15 * 60 * 1000;
+const OFFLINE_START_LOOKBACK_MS = 5 * 60 * 1000;
+const MESSAGE_CLOCK_SKEW_MS = 60 * 1000;
 
 const menu = `Claro! Estas são as opções do *${process.env.BRAND_NAME || 'Gate One Pro'}*:
 
@@ -104,7 +108,10 @@ export class WhatsAppBot {
     this.lastDisconnectAt = null;
     this.phoneByLid = new Map();
     this.processedMessageIds = new Map();
+    this.botSentMessageIds = new Map();
+    this.humanActivityMessageIds = new Map();
     this.messageQueues = new Map();
+    this.messageRecoveryStartedAt = Date.now();
     this.gateCore = new GateCoreClient({
       baseUrl: process.env.GATE_ONE_URL,
       secret: process.env.GATE_ONE_SHARED_SECRET
@@ -245,31 +252,121 @@ export class WhatsAppBot {
         this.#scheduleReconnect(delay);
       }
     });
-    socket.ev.on('messages.upsert', async ({ messages, type }) => {
+    socket.ev.on('messages.upsert', (event) =>
+      this.handleMessagesUpsert(event, { socket, generation }));
+  }
+
+  async handleMessagesUpsert({ messages, type }, {
+    socket = this.socket,
+    generation = this.connectionGeneration,
+    receivedAt = Date.now()
+  } = {}) {
+    if (!socket || generation !== this.connectionGeneration || socket !== this.socket) return;
+    if (!['notify', 'append'].includes(type) || !Array.isArray(messages)) return;
+    for (const message of messages) {
       if (generation !== this.connectionGeneration || socket !== this.socket) return;
-      if (type !== 'notify') return;
-      for (const message of messages) {
-        try {
-          await this.handleMessage(message);
-        } catch (error) {
-          this.lastError = `Falha ao atender uma mensagem: ${error.message}`;
-          this.logger?.error?.(
-            {
-              error: error.message,
-              messageId: String(message.key?.id || '').slice(0, 120)
-            },
-            'Falha ao atender mensagem do WhatsApp'
-          );
-          const jid = message.key?.remoteJid;
-          if (jid && !message.key?.fromMe) {
-            await this.reply(
-              jid,
-              'Tive uma instabilidade ao consultar seu cadastro, mas sua mensagem ficou registrada. Tente novamente em instantes ou digite *ATENDENTE* para falar com a equipe.'
-            ).catch(() => {});
-          }
+      const jid = message?.key?.remoteJid;
+      if (!message?.message ||
+          !(/@(s\.whatsapp\.net|lid)$/.test(jid || ''))) continue;
+      const inbound = inspectInboundMessage(message);
+      if (inbound.kind === 'ignored') continue;
+      if (message.key.fromMe) {
+        if (inbound.kind !== 'unknown' && (inbound.kind !== 'text' || inbound.text)) {
+          await this.handleHumanMessage(message, receivedAt);
+        }
+        continue;
+      }
+      if (type === 'append' &&
+          (!message.key?.id || inbound.kind === 'unknown' ||
+           (inbound.kind === 'text' && !inbound.text) ||
+           !this.#isRecentOfflineMessage(message, receivedAt))) continue;
+      try {
+        await this.handleMessage(message);
+      } catch (error) {
+        this.lastError = `Falha ao atender uma mensagem: ${error.message}`;
+        this.logger?.error?.(
+          {
+            error: error.message,
+            messageId: String(message.key?.id || '').slice(0, 120)
+          },
+          'Falha ao atender mensagem do WhatsApp'
+        );
+        if (generation === this.connectionGeneration && socket === this.socket) {
+          await this.reply(
+            jid,
+            'Tive uma instabilidade ao consultar seu cadastro, mas sua mensagem ficou registrada. Tente novamente em instantes ou digite *ATENDENTE* para falar com a equipe.'
+          ).catch(() => {});
         }
       }
+    }
+  }
+
+  #messageTimestampMs(message) {
+    const value = message.messageTimestamp;
+    try {
+      return (typeof value?.toNumber === 'function' ? value.toNumber() : Number(value)) * 1000;
+    } catch {
+      return NaN;
+    }
+  }
+
+  #isRecentOfflineMessage(message, receivedAt, includeStartupLookback = true) {
+    // Baileys emits offline inbound messages as append, not notify. Recover a
+    // short outage/deploy window without answering old history after startup.
+    const timestamp = this.#messageTimestampMs(message);
+    const earliest = Math.max(
+      receivedAt - OFFLINE_MESSAGE_MAX_AGE_MS,
+      this.messageRecoveryStartedAt - (includeStartupLookback ? OFFLINE_START_LOOKBACK_MS : 0)
+    );
+    return Number.isFinite(timestamp) && timestamp >= earliest &&
+      timestamp <= receivedAt + MESSAGE_CLOCK_SKEW_MS;
+  }
+
+  async handleHumanMessage(message, receivedAt = Date.now()) {
+    const messageId = String(message.key?.id || '');
+    if (!messageId || this.botSentMessageIds.has(messageId) ||
+        !this.#isRecentOfflineMessage(message, receivedAt, false)) return;
+    const customerJid = await resolveCustomerJid(message.key, this.phoneByLid,
+      (lidJid) => this.socket?.signalRepository?.lidMapping?.getPNForLID(lidJid));
+    const customerPhone = phoneFromWhatsAppJid(customerJid);
+    if (!customerPhone) return;
+    const previous = this.messageQueues.get(customerJid) || Promise.resolve();
+    const current = previous.catch(() => {}).then(async () => {
+      if (this.botSentMessageIds.has(messageId) || this.humanActivityMessageIds.has(messageId)) return;
+      const result = await this.recordHumanActivity(customerPhone, messageId,
+        new Date(this.#messageTimestampMs(message)).toISOString());
+      if (result?.ok !== true) throw new Error('HUMAN_ACTIVITY_RESPONSE_INVALID');
+      this.#rememberMessageId(this.humanActivityMessageIds, messageId);
     });
+    this.messageQueues.set(customerJid, current);
+    try {
+      await current;
+    } catch (error) {
+      this.lastError = `Falha ao registrar atividade humana: ${error.message}`;
+      this.logger?.warn?.({ messageId, code: error.code || null },
+        'Atividade humana do WhatsApp não registrada; nova entrega poderá tentar novamente');
+    } finally {
+      if (this.messageQueues.get(customerJid) === current) this.messageQueues.delete(customerJid);
+    }
+  }
+
+  #rememberMessageId(cache, messageId) {
+    const now = Date.now();
+    for (const [id, timestamp] of cache) {
+      if (now - timestamp > 60 * 60 * 1000) cache.delete(id);
+    }
+    cache.set(messageId, now);
+    if (cache.size > 10_000) cache.delete(cache.keys().next().value);
+  }
+
+  async #sendBotMessage(jid, content) {
+    if (!this.socket) return;
+    const messageId = generateMessageIDV2(this.socket.user?.id || this.me?.id);
+    // Own append echoes can arrive before sendMessage returns. Reserve first.
+    this.#rememberMessageId(this.botSentMessageIds, messageId);
+    const sent = await this.socket.sendMessage(jid, content, { messageId });
+    if (sent?.key?.id) this.#rememberMessageId(this.botSentMessageIds, sent.key.id);
+    return sent;
   }
 
   #scheduleReconnect(delay) {
@@ -323,11 +420,11 @@ export class WhatsAppBot {
       inbound.text ? `Legenda: ${String(inbound.text).slice(0, 500)}` : ''
     ].filter(Boolean).join('\n');
     if (inbound.kind === 'image') {
-      await this.socket.sendMessage(reviewJid, { image: buffer, caption });
+      await this.#sendBotMessage(reviewJid, { image: buffer, caption });
       return true;
     }
     if (inbound.kind === 'video') {
-      await this.socket.sendMessage(reviewJid, {
+      await this.#sendBotMessage(reviewJid, {
         video: buffer,
         mimetype: inbound.media?.mimetype || 'video/mp4',
         caption
@@ -335,8 +432,8 @@ export class WhatsAppBot {
       return true;
     }
     if (inbound.kind === 'audio') {
-      await this.socket.sendMessage(reviewJid, { text: caption });
-      await this.socket.sendMessage(reviewJid, {
+      await this.#sendBotMessage(reviewJid, { text: caption });
+      await this.#sendBotMessage(reviewJid, {
         audio: buffer,
         mimetype: inbound.media?.mimetype || 'audio/ogg',
         ptt: Boolean(inbound.media?.ptt)
@@ -344,7 +441,7 @@ export class WhatsAppBot {
       return true;
     }
     if (inbound.kind === 'pdf' || inbound.kind === 'document') {
-      await this.socket.sendMessage(reviewJid, {
+      await this.#sendBotMessage(reviewJid, {
         document: buffer,
         mimetype: inbound.media?.mimetype || 'application/octet-stream',
         fileName: inbound.media?.fileName || 'arquivo-whatsapp',
@@ -383,7 +480,7 @@ export class WhatsAppBot {
     }
 
     if (context?.automationPaused) return;
-    await this.setSession(customerPhone, 'support');
+    await this.setSession(customerPhone, 'support_media');
     const forwardingText = forwarded
       ? 'encaminhei para a equipe conferir'
       : 'registrei para a equipe conferir';
@@ -486,7 +583,7 @@ export class WhatsAppBot {
           }).catch(() => false);
         }
         if (context?.automationPaused) return;
-        await this.setSession(customerPhone, 'support');
+        await this.setSession(customerPhone, 'support_media');
         return this.reply(
           jid,
           `🎧 Recebi seu áudio. Não consegui transcrevê-lo agora, mas ${forwarded ? 'encaminhei' : 'registrei'} para o atendimento humano.`,
@@ -732,7 +829,7 @@ export class WhatsAppBot {
 
   async reply(jid, text, customerJid = jid) {
     if (typeof text !== 'string' || !text.trim()) return;
-    const sent = await this.socket?.sendMessage(jid, { text });
+    const sent = await this.#sendBotMessage(jid, { text });
     this.logOutbound(customerJid, text, sent?.key?.id).catch(() => {});
     return sent;
   }
@@ -754,7 +851,7 @@ export class WhatsAppBot {
   async sendTo(phone, text) {
     const digits = String(phone || '').replace(/\D/g, '');
     if (!digits || !this.socket || this.status !== 'connected') return null;
-    return this.socket.sendMessage(`${digits}@s.whatsapp.net`, { text: String(text) });
+    return this.#sendBotMessage(`${digits}@s.whatsapp.net`, { text: String(text) });
   }
 
   async gateOne(
@@ -882,6 +979,12 @@ export class WhatsAppBot {
       text,
       messageId
     }, { required: true });
+  }
+
+  async recordHumanActivity(phone, messageId, occurredAt) {
+    return this.gateOne('/api/integrations/whatsapp/human-activity', {
+      whatsapp: phone, messageId, occurredAt
+    }, { required: true, attempts: 2, timeoutMs: 8000 });
   }
 
   async transcribeAudio(phone, buffer, media = {}) {
