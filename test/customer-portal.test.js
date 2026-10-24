@@ -39,6 +39,32 @@ test('installation, notices, news and renewal commands open their section in one
   }
 });
 
+test('natural installation and credential requests open the protected area in one reply without reading or sending account secrets',async()=>{
+  const requests=[['como instalar na minha TV Samsung?','guias'],['me ajuda a configurar o IPTV Smarters','guias'],
+    ['como trocar a URL no SS IPTV?','guias'],['quero atualizar a lista no ssiptv','guias'],['onde baixar o aplicativo na LG?','guias'],
+    ['qual é meu usuário?',null],['esqueci minha senha',null],['me manda o link da área do cliente',null]];
+  for(const [text,section] of requests) {
+    const r=runtime();await r.bot.handleMessage(incoming(text));
+    assert.equal(r.sent.length,1,text);assert.ok(r.sent[0].text.includes(sectionUrl(section)),text);
+    assert.equal(r.calls.length,1);assert.equal(r.calls[0].path,'/api/integrations/whatsapp/portal');
+    assert.equal(r.autonomous.length,0);assert.equal(r.charges.length,0);
+    assert.doesNotMatch(r.sent[0].text,/Login:|Senha:|Password:|username=|password=/i);
+  }
+});
+
+test('natural requests retain human pause and never steal a payment or human request from the existing flow',async()=>{
+  for(const text of ['como trocar a URL no SS IPTV?','esqueci minha senha','me ajuda a instalar na Roku']) {
+    const r=runtime({paused:true});await r.bot.handleMessage(incoming(text));
+    assert.equal(r.sent.length,0);assert.equal(r.calls.length,0);assert.equal(r.autonomous.length,0);
+  }
+  for(const text of ['quero falar com atendente para instalar na TV','paguei e quero configurar na LG',
+    'quero renovar mensal e ver meu acesso','não quero instalar na Roku']) {
+    const r=runtime();r.bot.runAutonomousConversation=async input=>{r.autonomous.push(input);return{handled:true,response_text:'Continuação contextual'};};
+    await r.bot.handleMessage(incoming(text));assert.equal(r.calls.length,0,text);assert.equal(r.autonomous.length,1,text);
+    assert.equal(r.sent.length,1);assert.equal(r.sent[0].text,'Continuação contextual');
+  }
+});
+
 test('MENU contains four choices and its numeric selections open the customer area, guides and notices',async()=>{
   for(const [choice,section] of [['1',null],['2','guias'],['3','avisos']]){
     const r=runtime();await r.bot.handleMessage(incoming('MENU','open-menu'));

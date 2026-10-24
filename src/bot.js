@@ -11,6 +11,7 @@ import QRCode from 'qrcode';
 import { rm } from 'node:fs/promises';
 import { detectPlanCode } from './plans.js';
 import {
+  customerPortalRequest,
   isExplicitMenuCommand,
   isGreetingCommand,
   isHumanSupportCommand,
@@ -613,14 +614,9 @@ export class WhatsAppBot {
     const respond = (content) => this.reply(jid, content, customerPhone);
     const command = normalizeCommand(text);
 
-    let portalSection;
-    if (['GUIAS','GUIAS DE INSTALACAO','INSTALAR','COMO INSTALAR','INSTALAR NA TV'].includes(command)) portalSection='guias';
-    else if (command==='AVISOS') portalSection='avisos';
-    else if (['5','NOVIDADES','CONTEUDOS','CONTEUDO','LANCAMENTOS'].includes(command)) portalSection='novidades';
-    else if (['MEUS PAGAMENTOS','MEUSPAGAMENTOS','RENOVACAO'].includes(command) || /^(QUERO )?RENOVAR( (MEU|O) PLANO)?$/.test(command)) portalSection='pagamentos';
-    if (context?.sessionState==='menu' && ['1','2','3'].includes(command)) portalSection=({1:null,2:'guias',3:'avisos'})[command];
-    if (portalSection!==undefined || ['6','8','PORTAL','AREA DO CLIENTE','MINHA AREA','CADASTRO','CADASTRO ONLINE','MEU CADASTRO','ATUALIZAR MEUS DADOS','MINHA CONTA'].includes(command) ||
-        /^(AUTO ?CADASTRO|ME CADASTRAR|QUERO ME CADASTRAR|ATUALIZAR( MEUS)? DADOS|COMPLETAR( MEU)? CADASTRO|FAZER( MEU)? CADASTRO|QUERO ASSINAR|QUERO CONTRATAR|AINDA NAO SOU CLIENTE)$/.test(command)) {
+    const portalRequest = customerPortalRequest(text,{sessionState:context?.sessionState});
+    if (portalRequest) {
+      const portalSection=portalRequest.section;
       const link=await this.customerPortalLink(customerPhone,messageId,portalSection);
       const description=({guias:'Guias, aplicativos e vídeos para instalar na sua TV.',avisos:'Avisos do serviço e acesso às novidades.',novidades:'Novidades e publicações do canal do Telegram.',pagamentos:'Escolha seu plano e acompanhe seus pagamentos.'})[portalSection] || 'Seu usuário, senha, DNS, renovação e cadastro básico sem CPF ficam na área do cliente.';
       if(link) return respond(`Sua área do cliente Gate One Pro:\n${link}\n\n${description} Link pessoal de uso único, válido por 15 minutos. Não compartilhe.`);
