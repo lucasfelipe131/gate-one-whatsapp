@@ -23,7 +23,7 @@ test('the WhatsApp handler routes plan selection to Core and delivers one automa
   const core={configured:true,processConversation:async input=>{
     inputs.push(input);
     let data;
-    if(input.message.text==='quero renovar') data={conversation_state:'awaiting_plan',response_facts:{},response_text:'Escolha o plano: Mensal, Trimestral, Semestral ou Anual.'};
+    if(input.message.text==='3') data={conversation_state:'awaiting_plan',response_facts:{},response_text:'Escolha o plano: Mensal, Trimestral, Semestral ou Anual.'};
     else if(input.message.text==='trimestral') {
       assert.equal(input.plan_code,'quarterly');
       data={conversation_state:'waiting_payment',response_facts:{checkout_url:checkout,plan_name:'Trimestral',amount_cents:8500,simulated:false},response_text:`Plano Trimestral — R$ 85,00. ${checkout}`};
@@ -32,7 +32,8 @@ test('the WhatsApp handler routes plan selection to Core and delivers one automa
   }};
   bot.runAutonomousConversation=input=>processAutonomousOperation(core,{...input,conversationId:`whatsapp:${phone}`});
   const receive=(text,id)=>bot.handleMessage({key:{id,remoteJid:`${phone}@s.whatsapp.net`,fromMe:false},message:{conversation:text}});
-  await receive('quero renovar','choose');
+  // Outside the explicit menu, numeric 3 keeps the prior conversational renewal flow.
+  await receive('3','choose');
   assert.equal(sessionState,'awaiting_plan'); assert.doesNotMatch(sent[0].text,/https:/);
   await receive('trimestral','plan'); assert.equal(sessionState,'waiting_payment');
   assert.ok(sent[1].text.includes(checkout));

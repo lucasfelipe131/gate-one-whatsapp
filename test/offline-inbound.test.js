@@ -40,7 +40,7 @@ test('live notify still replies when the provider does not include a timestamp',
   await h.upsert('notify', [message]);
   assert.equal(h.received.length, 1);
   assert.equal(h.sent.length, 1);
-  assert.match(h.sent[0].text, /Planos e valores/);
+  assert.match(h.sent[0].text, /Área do cliente/);
 });
 
 test('offline append replies for recent messages received during startup and reconnect', async () => {

@@ -1,9 +1,35 @@
+import { detectPlanCode } from './plans.js';
+
 export function normalizeCommand(value) {
   return String(value || '')
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .trim()
     .toUpperCase();
+}
+
+// Only clear requests open the protected customer area. Mixed financial or
+// human requests continue to the existing authorized conversation flow.
+export function customerPortalRequest(value, { sessionState = null } = {}) {
+  const command = normalizeCommand(value);
+  const choice = section => ({section});
+  if (sessionState === 'menu' && ['1','2','3'].includes(command))
+    return choice(({1:null,2:'guias',3:'avisos'})[command]);
+  if (['GUIAS','GUIAS DE INSTALACAO','INSTALAR','COMO INSTALAR','INSTALAR NA TV'].includes(command)) return choice('guias');
+  if (command === 'AVISOS') return choice('avisos');
+  if (['5','NOVIDADES','CONTEUDOS','CONTEUDO','LANCAMENTOS'].includes(command)) return choice('novidades');
+  if (['MEUS PAGAMENTOS','MEUSPAGAMENTOS','RENOVACAO'].includes(command) || /^(QUERO )?RENOVAR( (MEU|O) PLANO)?$/.test(command)) return choice('pagamentos');
+  if (['6','8','PORTAL','AREA DO CLIENTE','MINHA AREA','CADASTRO','CADASTRO ONLINE','MEU CADASTRO','ATUALIZAR MEUS DADOS','MINHA CONTA'].includes(command) ||
+      /^(AUTO ?CADASTRO|ME CADASTRAR|QUERO ME CADASTRAR|ATUALIZAR( MEUS)? DADOS|COMPLETAR( MEU)? CADASTRO|FAZER( MEU)? CADASTRO|QUERO ASSINAR|QUERO CONTRATAR|AINDA NAO SOU CLIENTE)$/.test(command)) return choice(null);
+  const text = command.replace(/[^A-Z0-9 ]/g,' ').replace(/\s+/g,' ').trim();
+  if (text.length > 240 || isHumanSupportCommand(text) || detectPlanCode(text) ||
+      /\b(NAO (QUERO|PRECISO|DESEJO)|PAGUEI|COMPROVANTE|PIX|BOLETO|CARTAO|COBRANCA|RENOVAR|RENOVACAO|PAGAR|PAGAMENTO)\b/.test(text)) return null;
+  const device = /\b(TV|TELEVISAO|SAMSUNG|LG|ROKU|SMARTONE|SMART ONE|SS ?IPTV|SMARTERS|APLICATIVO|APP|URL|DNS|LISTA|M3U)\b/.test(text);
+  const setup = /\b(INSTALAR|INSTALO|INSTALACAO|BAIXAR|BAIXO|CONFIGURAR|CONFIGURO|TROCAR|ALTERAR|MUDAR|ATUALIZAR)\b/.test(text);
+  if (device && setup && /\b(COMO|ONDE|QUAL|QUAIS|QUERO|PRECISO|AJUDA|GUIA|PASSO A PASSO)\b/.test(text)) return choice('guias');
+  if (/\b(QUAL|QUAIS|VER|CONSULTAR|RECUPERAR|ESQUECI|PERDI|MANDA|MANDE|ENVIA|ENVIE|ACESSAR|ABRIR)\b/.test(text) &&
+      /\b(MEU USUARIO|MEU LOGIN|MINHA SENHA|MEUS DADOS|MEU ACESSO|AREA DO CLIENTE|MINHA AREA)\b/.test(text)) return choice(null);
+  return null;
 }
 
 export function isGreetingCommand(value) {
